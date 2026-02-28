@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, send_from_directory, request, send_file
+import os
 from flask_cors import CORS
 import yfinance as yf
 import numpy as np
@@ -338,4 +339,4 @@ def index():
 
 if __name__ == "__main__":
     print("\n✓ Pair Analysis server running at http://localhost:5000\n")
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
