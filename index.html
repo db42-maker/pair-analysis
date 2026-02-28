@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pair Analysis</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0c10;
+    --surface: #111318;
+    --border: #1e2330;
+    --accent: #c8a96e;
+    --accent2: #5b8dd9;
+    --accent3: #a78bfa;
+    --text: #e8e4dc;
+    --muted: #6b7280;
+    --green: #4ade80;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; min-height: 100vh; padding: 40px 24px; }
+
+  header { text-align: center; margin-bottom: 48px; }
+  header h1 { font-family: 'Playfair Display', serif; font-size: 2.8rem; color: var(--accent); letter-spacing: -0.5px; }
+  header p { color: var(--muted); font-size: 0.75rem; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
+
+  .input-row { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; align-items: flex-end; }
+  .input-group { display: flex; flex-direction: column; gap: 6px; }
+  label { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+  input, select { background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: 'DM Mono', monospace; font-size: 0.9rem; padding: 10px 14px; border-radius: 4px; outline: none; transition: border-color 0.2s; width: 130px; }
+  input:focus, select:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+  select { width: 140px; }
+  .vs-badge { font-family: 'Playfair Display', serif; color: var(--muted); font-size: 1.2rem; padding-bottom: 10px; }
+
+  .btn-row { display: flex; gap: 12px; justify-content: center; margin-bottom: 40px; }
+  button { border: none; font-family: 'DM Mono', monospace; font-size: 0.75rem; font-weight: 500; letter-spacing: 2px; text-transform: uppercase; padding: 11px 28px; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #analyzeBtn { background: var(--accent); color: #0a0c10; }
+  #exportBtn { background: var(--surface); color: var(--green); border: 1px solid var(--green); display: none; }
+
+  .error { text-align: center; color: var(--red); font-size: 0.75rem; margin-bottom: 24px; letter-spacing: 1px; }
+  #results { display: none; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 24px; max-width: 900px; margin-left: auto; margin-right: auto; }
+  .stat-card { background: var(--surface); padding: 20px 16px; text-align: center; }
+  .stat-label { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .stat-value { font-size: 1.6rem; font-family: 'Playfair Display', serif; color: var(--accent); }
+  .stat-sub { font-size: 0.65rem; color: var(--muted); margin-top: 4px; }
+
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 900px; margin: 0 auto 24px; }
+  @media (max-width: 640px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 20px; }
+  .chart-title { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; }
+  canvas { width: 100% !important; }
+
+  .returns-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 900px; margin: 0 auto 24px; }
+  .returns-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 20px; }
+  .returns-title { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; }
+  .ret-row { display: flex; justify-content: space-between; font-size: 0.75rem; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .ret-row:last-child { border-bottom: none; }
+  .ret-pos { color: var(--green); }
+  .ret-neg { color: var(--red); }
+
+  .full-width { max-width: 900px; margin: 0 auto 24px; }
+
+  .window-row { display: flex; align-items: center; gap: 12px; max-width: 900px; margin: 0 auto 12px; }
+  .window-row label { color: var(--muted); font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; }
+  .window-row select { width: 120px; font-size: 0.8rem; padding: 6px 10px; }
+
+  .loading { text-align: center; color: var(--muted); font-size: 0.75rem; letter-spacing: 2px; padding: 40px; }
+  .disclaimer { text-align: center; color: var(--muted); font-size: 0.6rem; letter-spacing: 1px; margin-top: 40px; max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.6; }
+
+  .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pair Analysis</h1>
+  <p>Statistical comparison of equity pairs</p>
+</header>
+
+<div class="input-row">
+  <div class="input-group">
+    <label>Stock A</label>
+    <input id="ticker1" type="text" placeholder="e.g. CRM" maxlength="6" />
+  </div>
+  <div class="vs-badge">vs</div>
+  <div class="input-group">
+    <label>Stock B</label>
+    <input id="ticker2" type="text" placeholder="e.g. HUBS" maxlength="6" />
+  </div>
+  <div class="input-group">
+    <label>Period</label>
+    <select id="period">
+      <option value="1mo">1 Month</option>
+      <option value="3mo">3 Months</option>
+      <option value="6mo">6 Months</option>
+      <option value="1y" selected>1 Year</option>
+      <option value="2y">2 Years</option>
+      <option value="5y">5 Years</option>
+    </select>
+  </div>
+  <div class="input-group">
+    <label>Roll Window</label>
+    <select id="window">
+      <option value="10">10 days</option>
+      <option value="20">20 days</option>
+      <option value="30" selected>30 days</option>
+      <option value="60">60 days</option>
+      <option value="90">90 days</option>
+    </select>
+  </div>
+</div>
+
+<div class="btn-row">
+  <button id="analyzeBtn" onclick="analyze()">Analyze</button>
+  <button id="exportBtn" onclick="exportExcel()">↓ Export to Excel</button>
+</div>
+
+<div id="errorMsg" class="error" style="display:none;"></div>
+<div id="loadingMsg" class="loading" style="display:none;">Fetching data...</div>
+
+<div id="results">
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">
+        Indexed Price Performance (Base 100) &nbsp;
+        <span style="color:var(--accent)">■</span> <span style="font-size:0.6rem" id="legendA"></span> &nbsp;
+        <span style="color:var(--accent2)">■</span> <span style="font-size:0.6rem" id="legendB"></span> &nbsp;
+        <span style="color:var(--accent3)">■</span> <span style="font-size:0.6rem">SPY</span>
+      </div>
+      <canvas id="priceChart" height="200"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Scatter — Daily Returns Correlation</div>
+      <canvas id="scatterChart" height="200"></canvas>
+    </div>
+  </div>
+
+  <div class="returns-row">
+    <div class="returns-card" id="statsA"></div>
+    <div class="returns-card" id="statsB"></div>
+  </div>
+
+  <div class="full-width chart-card">
+    <div class="chart-title">Price Spread (A / B Ratio)</div>
+    <canvas id="spreadChart" height="100"></canvas>
+  </div>
+
+  <div class="full-width chart-card" style="margin-top:0;">
+    <div class="chart-title">Rolling Correlation (<span id="windowLabel">30</span>-Day Window)</div>
+    <canvas id="rollingChart" height="100"></canvas>
+  </div>
+</div>
+
+<p class="disclaimer">Data sourced via Yahoo Finance. For informational purposes only — not investment advice.</p>
+
+<script>
+const API_BASE = "http://localhost:5000";
+let charts = {};
+let lastParams = {};
+
+function fmtPct(n) { return (n * 100).toFixed(2) + "%"; }
+function fmt(n, d = 4) { return n.toFixed(d); }
+
+async function analyze() {
+  const t1 = document.getElementById("ticker1").value.trim().toUpperCase();
+  const t2 = document.getElementById("ticker2").value.trim().toUpperCase();
+  const period = document.getElementById("period").value;
+  const window = document.getElementById("window").value;
+  const errEl = document.getElementById("errorMsg");
+  const loadEl = document.getElementById("loadingMsg");
+  const resultsEl = document.getElementById("results");
+  const btn = document.getElementById("analyzeBtn");
+  const exportBtn = document.getElementById("exportBtn");
+
+  errEl.style.display = "none";
+  resultsEl.style.display = "none";
+  exportBtn.style.display = "none";
+
+  if (!t1 || !t2) { errEl.textContent = "Please enter both tickers."; errEl.style.display = "block"; return; }
+
+  btn.disabled = true;
+  loadEl.style.display = "block";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/compare?a=${t1}&b=${t2}&period=${period}&window=${window}`);
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || "Unknown server error.");
+
+    lastParams = { t1, t2, period, window };
+
+    const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_window, stats } = data;
+    const { ticker_a, ticker_b } = stats;
+
+    // Legend labels
+    document.getElementById("legendA").textContent = t1;
+    document.getElementById("legendB").textContent = t2;
+    document.getElementById("windowLabel").textContent = rolling_window;
+
+    // Stats grid
+    const gridStats = [
+      { label: "Correlation", value: fmt(stats.correlation), sub: "Pearson (daily returns)" },
+      { label: "R²", value: fmt(stats.r2), sub: "Coefficient of determination" },
+      { label: `Beta (${t1}/${t2})`, value: fmt(stats.beta, 3), sub: `Sensitivity of ${t1} to ${t2}` },
+      { label: "Tracking Error", value: fmtPct(stats.tracking_error), sub: "Annualized spread vol" },
+      { label: `Vol ${t1}`, value: fmtPct(ticker_a.ann_vol), sub: "Annualized" },
+      { label: `Vol ${t2}`, value: fmtPct(ticker_b.ann_vol), sub: "Annualized" },
+    ];
+    document.getElementById("statsGrid").innerHTML = gridStats.map(s => `
+      <div class="stat-card">
+        <div class="stat-label">${s.label}</div>
+        <div class="stat-value">${s.value}</div>
+        <div class="stat-sub">${s.sub}</div>
+      </div>`).join("");
+
+    const stockCard = (t, color) => `
+      <div class="returns-title" style="color:${color}">${t.symbol}</div>
+      <div class="ret-row"><span>Total Return</span><span class="${t.total_return >= 0 ? "ret-pos" : "ret-neg"}">${fmtPct(t.total_return)}</span></div>
+      <div class="ret-row"><span>Ann. Vol</span><span>${fmtPct(t.ann_vol)}</span></div>
+      <div class="ret-row"><span>Sharpe (rf=0)</span><span>${fmt(t.sharpe, 2)}</span></div>
+      <div class="ret-row"><span>Max Drawdown</span><span class="ret-neg">-${fmtPct(t.max_drawdown)}</span></div>
+      <div class="ret-row"><span>Best Day</span><span class="ret-pos">${fmtPct(t.best_day)}</span></div>
+      <div class="ret-row"><span>Worst Day</span><span class="ret-neg">${fmtPct(t.worst_day)}</span></div>`;
+    document.getElementById("statsA").innerHTML = stockCard(ticker_a, "var(--accent)");
+    document.getElementById("statsB").innerHTML = stockCard(ticker_b, "var(--accent2)");
+
+    // Destroy old charts
+    Object.values(charts).forEach(c => c && c.destroy());
+    charts = {};
+
+    const gc = "#1e2330";
+    const baseScales = {
+      x: { ticks: { color: "#6b7280", font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: gc } },
+      y: { ticks: { color: "#6b7280", font: { size: 9 } }, grid: { color: gc } },
+    };
+    const legendOpts = { labels: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, boxWidth: 10 } };
+
+    // Price chart (with SPY)
+    const priceDatasets = [
+      { label: t1, data: indexed_a, borderColor: "#c8a96e", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      { label: t2, data: indexed_b, borderColor: "#5b8dd9", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+    ];
+    if (indexed_spy) {
+      priceDatasets.push({ label: "SPY", data: indexed_spy, borderColor: "#a78bfa", borderWidth: 1.2, pointRadius: 0, tension: 0.1, borderDash: [4, 3] });
+    }
+    charts.price = new Chart(document.getElementById("priceChart"), {
+      type: "line",
+      data: { labels: dates, datasets: priceDatasets },
+      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: baseScales },
+    });
+
+    // Scatter
+    charts.scatter = new Chart(document.getElementById("scatterChart"), {
+      type: "scatter",
+      data: { datasets: [{ data: returns_a.map((r, i) => ({ x: returns_b[i], y: r })), backgroundColor: "rgba(200,169,110,0.35)", pointRadius: 3 }] },
+      options: {
+        responsive: true, animation: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { title: { display: true, text: `${t2} Daily Return (%)`, color: "#6b7280", font: { size: 9 } }, ticks: { color: "#6b7280", font: { size: 9 } }, grid: { color: gc } },
+          y: { title: { display: true, text: `${t1} Daily Return (%)`, color: "#6b7280", font: { size: 9 } }, ticks: { color: "#6b7280", font: { size: 9 } }, grid: { color: gc } },
+        },
+      },
+    });
+
+    // Spread
+    charts.spread = new Chart(document.getElementById("spreadChart"), {
+      type: "line",
+      data: { labels: dates, datasets: [{ label: `${t1}/${t2} Ratio`, data: spread, borderColor: "#4ade80", borderWidth: 1.5, pointRadius: 0, fill: true, backgroundColor: "rgba(74,222,128,0.05)", tension: 0.1 }] },
+      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: baseScales },
+    });
+
+    // Rolling correlation
+    const rollingDates = dates.slice(1); // one shorter than prices (returns-based)
+    charts.rolling = new Chart(document.getElementById("rollingChart"), {
+      type: "line",
+      data: {
+        labels: rollingDates,
+        datasets: [
+          { label: `${rolling_window}-Day Rolling Corr`, data: rolling_corr, borderColor: "#f87171", borderWidth: 1.5, pointRadius: 0, tension: 0.1, spanGaps: false },
+          { label: "Zero line", data: rollingDates.map(() => 0), borderColor: "#1e2330", borderWidth: 1, pointRadius: 0, borderDash: [4, 3] },
+        ]
+      },
+      options: {
+        responsive: true, animation: false,
+        plugins: { legend: legendOpts },
+        scales: {
+          x: { ticks: { color: "#6b7280", font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: gc } },
+          y: { min: -1, max: 1, ticks: { color: "#6b7280", font: { size: 9 } }, grid: { color: gc } },
+        },
+      },
+    });
+
+    loadEl.style.display = "none";
+    resultsEl.style.display = "block";
+    exportBtn.style.display = "inline-block";
+
+  } catch (e) {
+    loadEl.style.display = "none";
+    errEl.textContent = e.message || "Something went wrong. Is the server running?";
+    errEl.style.display = "block";
+  }
+
+  btn.disabled = false;
+}
+
+function exportExcel() {
+  const { t1, t2, period, window } = lastParams;
+  window.location.href = `${API_BASE}/api/export?a=${t1}&b=${t2}&period=${period}&window=${window}`;
+}
+
+document.querySelectorAll("input").forEach(el => {
+  el.addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
+});
+</script>
+</body>
+</html>
