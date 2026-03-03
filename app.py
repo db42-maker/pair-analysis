@@ -1,12 +1,36 @@
-from flask import Flask, jsonify, send_from_directory, request, send_file
 import os
+import io
+from flask import Flask, jsonify, send_from_directory, request, send_file
 from flask_cors import CORS
 import yfinance as yf
 import numpy as np
-import io
+import requests as req_lib
 
 app = Flask(__name__, static_folder=".")
 CORS(app)
+
+# Fix for Yahoo Finance blocking server-side requests
+_session = req_lib.Session()
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+
+
+def fetch_close(tickers, period):
+    """Download closing prices using a browser-like session."""
+    data = yf.download(
+        tickers,
+        period=period,
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        session=_session,
+    )
+    if hasattr(data.columns, "levels"):
+        close = data["Close"].dropna()
+    else:
+        close = data.dropna()
+    return close
 
 
 def daily_returns(prices):
@@ -104,18 +128,7 @@ def compare():
 
     try:
         tickers_to_fetch = list({ticker_a, ticker_b, "SPY"})
-        data = yf.download(
-            tickers_to_fetch,
-            period=period,
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-        )
-
-       try:
-    close = data["Close"].dropna()
-except KeyError:
-    close = data.dropna()
+        close = fetch_close(tickers_to_fetch, period)
 
         if close.empty or len(close) < 10:
             return jsonify({"error": "Not enough data. Check your tickers."}), 400
@@ -139,7 +152,6 @@ except KeyError:
         ret_b = [round((prices_b[i] - prices_b[i-1]) / prices_b[i-1] * 100, 4) for i in range(1, len(prices_b))]
 
         rolling_corr = compute_rolling_correlation(prices_a, prices_b, window=window)
-
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
 
         return jsonify({
@@ -169,7 +181,7 @@ def export():
         from openpyxl.styles import Font, PatternFill, Alignment
         from openpyxl.utils import get_column_letter
     except ImportError:
-        return jsonify({"error": "openpyxl not installed. Run: pip install openpyxl"}), 500
+        return jsonify({"error": "openpyxl not installed."}), 500
 
     ticker_a = request.args.get("a", "").upper().strip()
     ticker_b = request.args.get("b", "").upper().strip()
@@ -182,8 +194,7 @@ def export():
 
     try:
         tickers_to_fetch = list({ticker_a, ticker_b, "SPY"})
-        data = yf.download(tickers_to_fetch, period=period, interval="1d", auto_adjust=True, progress=False)
-        close = data["Close"].dropna()
+        close = fetch_close(tickers_to_fetch, period)
 
         dates = [d.strftime("%Y-%m-%d") for d in close.index]
         prices_a = close[ticker_a].tolist()
@@ -204,7 +215,6 @@ def export():
         center      = Alignment(horizontal="center", vertical="center")
         left        = Alignment(horizontal="left", vertical="center")
 
-        # ── Sheet 1: Summary ─────────────────────────────────────
         ws1 = wb.active
         ws1.title = "Summary"
         ws1.sheet_view.showGridLines = False
@@ -223,7 +233,6 @@ def export():
         ws1["A2"].alignment = left
         ws1.row_dimensions[2].height = 18
 
-        # Pair stats block
         ws1.merge_cells("A4:C4")
         ws1["A4"] = "PAIR STATISTICS"
         ws1["A4"].font = Font(color="C8A96E", bold=True, name="Courier New", size=10)
@@ -248,7 +257,6 @@ def export():
                 cell.alignment = center
             ws1.row_dimensions[i].height = 20
 
-        # Individual stock stats block
         sr = 5 + len(pair_rows) + 2
         ws1.merge_cells(f"A{sr}:C{sr}")
         ws1[f"A{sr}"] = "INDIVIDUAL STOCK STATISTICS"
@@ -279,7 +287,6 @@ def export():
         for col, w in [(1, 28), (2, 16), (3, 16)]:
             ws1.column_dimensions[get_column_letter(col)].width = w
 
-        # ── Sheet 2: Price Data ───────────────────────────────────
         ws2 = wb.create_sheet("Price Data")
         ws2.sheet_view.showGridLines = False
 
