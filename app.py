@@ -112,7 +112,10 @@ def compare():
             progress=False,
         )
 
-        close = data["Close"].dropna()
+       try:
+    close = data["Close"].dropna()
+except KeyError:
+    close = data.dropna()
 
         if close.empty or len(close) < 10:
             return jsonify({"error": "Not enough data. Check your tickers."}), 400
