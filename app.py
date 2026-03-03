@@ -1,36 +1,77 @@
 import os
 import io
+import time
 from flask import Flask, jsonify, send_from_directory, request, send_file
 from flask_cors import CORS
-import yfinance as yf
 import numpy as np
 import requests as req_lib
 
 app = Flask(__name__, static_folder=".")
 CORS(app)
 
-# Fix for Yahoo Finance blocking server-side requests
-_session = req_lib.Session()
-_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
 
 
-def fetch_close(tickers, period):
-    """Download closing prices using a browser-like session."""
-    data = yf.download(
-        tickers,
-        period=period,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        session=_session,
+def fetch_daily_prices(ticker, api_key):
+    """Fetch daily adjusted close prices from Alpha Vantage."""
+    url = (
+        f"https://www.alphavantage.co/query"
+        f"?function=TIME_SERIES_DAILY_ADJUSTED"
+        f"&symbol={ticker}"
+        f"&outputsize=full"
+        f"&apikey={api_key}"
     )
-    if hasattr(data.columns, "levels"):
-        close = data["Close"].dropna()
-    else:
-        close = data.dropna()
-    return close
+    r = req_lib.get(url, timeout=15)
+    data = r.json()
+
+    if "Error Message" in data:
+        raise ValueError(f"Ticker not found: {ticker}")
+    if "Note" in data:
+        raise ValueError("Alpha Vantage rate limit hit. Please wait a minute and try again.")
+    if "Information" in data:
+        raise ValueError("Alpha Vantage API limit reached. Please try again later.")
+
+    ts = data.get("Time Series (Daily)", {})
+    if not ts:
+        raise ValueError(f"No data returned for {ticker}")
+
+    # Sort dates ascending
+    sorted_dates = sorted(ts.keys())
+    dates = sorted_dates
+    prices = [float(ts[d]["5. adjusted close"]) for d in sorted_dates]
+    return dates, prices
+
+
+def filter_by_period(dates, prices, period):
+    """Filter dates/prices to the requested period."""
+    from datetime import datetime, timedelta
+    period_days = {
+        "1mo": 30, "3mo": 90, "6mo": 180,
+        "1y": 365, "2y": 730, "5y": 1825
+    }
+    days = period_days.get(period, 365)
+    cutoff = datetime.today() - timedelta(days=days)
+    filtered = [(d, p) for d, p in zip(dates, prices) if datetime.strptime(d, "%Y-%m-%d") >= cutoff]
+    if not filtered:
+        return [], []
+    fdates, fprices = zip(*filtered)
+    return list(fdates), list(fprices)
+
+
+def align_series(dates_a, prices_a, dates_b, prices_b):
+    """Keep only dates present in both series."""
+    map_a = dict(zip(dates_a, prices_a))
+    map_b = dict(zip(dates_b, prices_b))
+    common = sorted(set(map_a.keys()) & set(map_b.keys()))
+    return common, [map_a[d] for d in common], [map_b[d] for d in common]
+
+
+def align_three(dates_a, prices_a, dates_b, prices_b, dates_c, prices_c):
+    map_a = dict(zip(dates_a, prices_a))
+    map_b = dict(zip(dates_b, prices_b))
+    map_c = dict(zip(dates_c, prices_c))
+    common = sorted(set(map_a.keys()) & set(map_b.keys()) & set(map_c.keys()))
+    return common, [map_a[d] for d in common], [map_b[d] for d in common], [map_c[d] for d in common]
 
 
 def daily_returns(prices):
@@ -117,6 +158,7 @@ def compare():
     ticker_b = request.args.get("b", "").upper().strip()
     period = request.args.get("period", "1y")
     window = int(request.args.get("window", 30))
+    api_key = ALPHA_VANTAGE_KEY
 
     allowed_periods = {"1mo", "3mo", "6mo", "1y", "2y", "5y"}
     if not ticker_a or not ticker_b:
@@ -125,26 +167,39 @@ def compare():
         return jsonify({"error": "Please enter two different tickers."}), 400
     if period not in allowed_periods:
         return jsonify({"error": "Invalid period."}), 400
+    if not api_key:
+        return jsonify({"error": "API key not configured on server."}), 500
 
     try:
-        tickers_to_fetch = list({ticker_a, ticker_b, "SPY"})
-        close = fetch_close(tickers_to_fetch, period)
+        # Fetch all three tickers — small delay to respect rate limits
+        dates_a, prices_a_full = fetch_daily_prices(ticker_a, api_key)
+        time.sleep(0.5)
+        dates_b, prices_b_full = fetch_daily_prices(ticker_b, api_key)
+        time.sleep(0.5)
+        dates_spy, prices_spy_full = fetch_daily_prices("SPY", api_key)
 
-        if close.empty or len(close) < 10:
-            return jsonify({"error": "Not enough data. Check your tickers."}), 400
+        # Filter to period
+        dates_a, prices_a_full = filter_by_period(dates_a, prices_a_full, period)
+        dates_b, prices_b_full = filter_by_period(dates_b, prices_b_full, period)
+        dates_spy, prices_spy_full = filter_by_period(dates_spy, prices_spy_full, period)
 
-        for t in [ticker_a, ticker_b]:
-            if t not in close.columns:
-                return jsonify({"error": f"Could not find ticker: {t}"}), 400
+        # Align all three
+        dates, prices_a, prices_b, prices_spy = align_three(
+            dates_a, prices_a_full,
+            dates_b, prices_b_full,
+            dates_spy, prices_spy_full
+        )
 
-        dates = [d.strftime("%b %d '%y") for d in close.index]
-        prices_a = close[ticker_a].tolist()
-        prices_b = close[ticker_b].tolist()
-        prices_spy = close["SPY"].tolist() if "SPY" in close.columns else None
+        if len(dates) < 10:
+            return jsonify({"error": "Not enough overlapping data. Check your tickers."}), 400
 
-        idx_a = [round(p / prices_a[0] * 100, 4) for p in prices_a]
-        idx_b = [round(p / prices_b[0] * 100, 4) for p in prices_b]
-        idx_spy = [round(p / prices_spy[0] * 100, 4) for p in prices_spy] if prices_spy else None
+        # Format dates for display
+        from datetime import datetime
+        display_dates = [datetime.strptime(d, "%Y-%m-%d").strftime("%b %d '%y") for d in dates]
+
+        idx_a   = [round(p / prices_a[0] * 100, 4) for p in prices_a]
+        idx_b   = [round(p / prices_b[0] * 100, 4) for p in prices_b]
+        idx_spy = [round(p / prices_spy[0] * 100, 4) for p in prices_spy]
 
         spread = [round(a / b, 6) for a, b in zip(prices_a, prices_b)]
 
@@ -155,7 +210,7 @@ def compare():
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
 
         return jsonify({
-            "dates": dates,
+            "dates": display_dates,
             "indexed_a": idx_a,
             "indexed_b": idx_b,
             "indexed_spy": idx_spy,
@@ -167,9 +222,11 @@ def compare():
             "stats": stats,
             "prices_a": [round(p, 4) for p in prices_a],
             "prices_b": [round(p, 4) for p in prices_b],
-            "prices_spy": [round(p, 4) for p in prices_spy] if prices_spy else None,
+            "prices_spy": [round(p, 4) for p in prices_spy],
         })
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Data fetch failed: {str(e)}"}), 500
 
@@ -187,19 +244,29 @@ def export():
     ticker_b = request.args.get("b", "").upper().strip()
     period = request.args.get("period", "1y")
     window = int(request.args.get("window", 30))
+    api_key = ALPHA_VANTAGE_KEY
 
     allowed_periods = {"1mo", "3mo", "6mo", "1y", "2y", "5y"}
     if not ticker_a or not ticker_b or period not in allowed_periods:
         return jsonify({"error": "Invalid parameters."}), 400
 
     try:
-        tickers_to_fetch = list({ticker_a, ticker_b, "SPY"})
-        close = fetch_close(tickers_to_fetch, period)
+        dates_a, prices_a_full = fetch_daily_prices(ticker_a, api_key)
+        time.sleep(0.5)
+        dates_b, prices_b_full = fetch_daily_prices(ticker_b, api_key)
+        time.sleep(0.5)
+        dates_spy, prices_spy_full = fetch_daily_prices("SPY", api_key)
 
-        dates = [d.strftime("%Y-%m-%d") for d in close.index]
-        prices_a = close[ticker_a].tolist()
-        prices_b = close[ticker_b].tolist()
-        prices_spy = close["SPY"].tolist() if "SPY" in close.columns else None
+        dates_a, prices_a_full = filter_by_period(dates_a, prices_a_full, period)
+        dates_b, prices_b_full = filter_by_period(dates_b, prices_b_full, period)
+        dates_spy, prices_spy_full = filter_by_period(dates_spy, prices_spy_full, period)
+
+        dates, prices_a, prices_b, prices_spy = align_three(
+            dates_a, prices_a_full,
+            dates_b, prices_b_full,
+            dates_spy, prices_spy_full
+        )
+
         rolling_corr = compute_rolling_correlation(prices_a, prices_b, window=window)
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
 
@@ -292,7 +359,7 @@ def export():
 
         idx_a   = [round(p / prices_a[0] * 100, 4) for p in prices_a]
         idx_b   = [round(p / prices_b[0] * 100, 4) for p in prices_b]
-        idx_spy = [round(p / prices_spy[0] * 100, 4) for p in prices_spy] if prices_spy else [None]*len(dates)
+        idx_spy = [round(p / prices_spy[0] * 100, 4) for p in prices_spy]
         spread  = [round(a / b, 6) for a, b in zip(prices_a, prices_b)]
 
         headers = ["Date", ticker_a, ticker_b, "SPY",
@@ -312,7 +379,7 @@ def export():
                 date,
                 round(prices_a[i], 4),
                 round(prices_b[i], 4),
-                round(prices_spy[i], 4) if prices_spy else None,
+                round(prices_spy[i], 4),
                 idx_a[i], idx_b[i], idx_spy[i],
                 spread[i],
                 rolling_corr[i] if i < len(rolling_corr) else None,
@@ -338,6 +405,8 @@ def export():
             download_name=f"pair_analysis_{ticker_a}_{ticker_b}_{period}.xlsx",
         )
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
