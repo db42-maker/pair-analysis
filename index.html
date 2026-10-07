@@ -41,6 +41,11 @@
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   #analyzeBtn { background: var(--accent); color: #0a0c10; }
   #exportBtn { background: var(--surface); color: var(--green); border: 1px solid var(--green); display: none; }
+  #copyLinkBtn { background: var(--surface); color: var(--accent2); border: 1px solid var(--accent2); display: none; }
+  input[type="date"] { width: 150px; color-scheme: dark; }
+  #shareLink { display: none; width: 100%; max-width: 600px; margin: -24px auto 32px; font-size: 0.75rem; color: var(--accent2); }
+  .signout { display: block; margin-top: 10px; color: var(--muted); }
+  .signout:hover { color: var(--accent); }
 
   .error { text-align: center; color: var(--red); font-size: 0.75rem; margin-bottom: 24px; letter-spacing: 1px; }
   #results { display: none; }
@@ -87,12 +92,12 @@
 <div class="input-row">
   <div class="input-group">
     <label>Stock A</label>
-    <input id="ticker1" type="text" placeholder="e.g. CRM" maxlength="6" />
+    <input id="ticker1" type="text" placeholder="e.g. CRM" maxlength="15" />
   </div>
   <div class="vs-badge">vs</div>
   <div class="input-group">
     <label>Stock B</label>
-    <input id="ticker2" type="text" placeholder="e.g. HUBS" maxlength="6" />
+    <input id="ticker2" type="text" placeholder="e.g. HUBS" maxlength="15" />
   </div>
   <div class="input-group">
     <label>Period</label>
@@ -103,7 +108,16 @@
       <option value="1y" selected>1 Year</option>
       <option value="2y">2 Years</option>
       <option value="5y">5 Years</option>
+      <option value="custom">Custom…</option>
     </select>
+  </div>
+  <div class="input-group custom-dates" style="display:none;">
+    <label>From</label>
+    <input id="startDate" type="date" />
+  </div>
+  <div class="input-group custom-dates" style="display:none;">
+    <label>To</label>
+    <input id="endDate" type="date" />
   </div>
   <div class="input-group">
     <label>Roll Window</label>
@@ -120,7 +134,9 @@
 <div class="btn-row">
   <button id="analyzeBtn" onclick="analyze()">Analyze</button>
   <button id="exportBtn" onclick="exportExcel()">↓ Export to Excel</button>
+  <button id="copyLinkBtn" onclick="copyLink()">Copy Link</button>
 </div>
+<input id="shareLink" type="text" readonly onclick="this.select()" title="Copy this link" />
 
 <div id="errorMsg" class="error" style="display:none;"></div>
 <div id="loadingMsg" class="loading" style="display:none;">Fetching data...</div>
@@ -158,46 +174,83 @@
     <div class="chart-title">Rolling Correlation (<span id="windowLabel">30</span>-Day Window)</div>
     <canvas id="rollingChart" height="100"></canvas>
   </div>
+
+  <div class="full-width chart-card" style="margin-top:0;">
+    <div class="chart-title">Rolling Beta (<span id="betaWindowLabel">30</span>-Day Window) — <span id="betaLabel"></span></div>
+    <canvas id="rollingBetaChart" height="100"></canvas>
+  </div>
 </div>
 
-<p class="disclaimer">Data sourced via Yahoo Finance. For informational purposes only — not investment advice.</p>
+<p class="disclaimer">Data sourced via Yahoo Finance. For informational purposes only — not investment advice.<!--SIGN_OUT--></p>
 
 <script>
 const API_BASE = "";
 let charts = {};
-let lastParams = {};
+let lastQuery = null;
 
 function fmtPct(n) { return (n * 100).toFixed(2) + "%"; }
 function fmt(n, d = 4) { return n.toFixed(d); }
 
+const $ = id => document.getElementById(id);
+
+// Current form inputs as URL query parameters (also used for shareable links and the export).
+function currentQuery() {
+  const q = new URLSearchParams({
+    a: $("ticker1").value.trim().toUpperCase(),
+    b: $("ticker2").value.trim().toUpperCase(),
+    period: $("period").value,
+    window: $("window").value,
+  });
+  if (q.get("period") === "custom") {
+    q.set("start", $("startDate").value);
+    q.set("end", $("endDate").value);
+  }
+  return q;
+}
+
+function toggleCustomDates() {
+  const custom = $("period").value === "custom";
+  document.querySelectorAll(".custom-dates").forEach(el => el.style.display = custom ? "flex" : "none");
+  if (custom && !$("endDate").value) $("endDate").value = new Date().toISOString().slice(0, 10);
+}
+
 async function analyze() {
-  const t1 = document.getElementById("ticker1").value.trim().toUpperCase();
-  const t2 = document.getElementById("ticker2").value.trim().toUpperCase();
-  const period = document.getElementById("period").value;
-  const window = document.getElementById("window").value;
-  const errEl = document.getElementById("errorMsg");
-  const loadEl = document.getElementById("loadingMsg");
-  const resultsEl = document.getElementById("results");
-  const btn = document.getElementById("analyzeBtn");
-  const exportBtn = document.getElementById("exportBtn");
+  const query = currentQuery();
+  const t1 = query.get("a"), t2 = query.get("b");
+  const errEl = $("errorMsg");
+  const loadEl = $("loadingMsg");
+  const resultsEl = $("results");
+  const btn = $("analyzeBtn");
+  const exportBtn = $("exportBtn");
+  const copyBtn = $("copyLinkBtn");
 
   errEl.style.display = "none";
   resultsEl.style.display = "none";
   exportBtn.style.display = "none";
+  copyBtn.style.display = "none";
+  $("shareLink").style.display = "none";
 
   if (!t1 || !t2) { errEl.textContent = "Please enter both tickers."; errEl.style.display = "block"; return; }
+  if (query.get("period") === "custom" && !query.get("start")) {
+    errEl.textContent = "Please pick a start date."; errEl.style.display = "block"; return;
+  }
 
   btn.disabled = true;
   loadEl.style.display = "block";
 
   try {
-    const res = await fetch(`${API_BASE}/api/compare?a=${t1}&b=${t2}&period=${period}&window=${window}`);
+    const res = await fetch(`${API_BASE}/api/compare?${query}`);
+    if (res.status === 401) {  // sign-in expired: go to the login page and come back to this analysis
+      location.href = "/login?next=" + encodeURIComponent("/?" + query);
+      return;
+    }
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || "Unknown server error.");
 
-    lastParams = { t1, t2, period, window };
+    lastQuery = query;
+    history.replaceState(null, "", "/?" + query);  // makes the address bar a shareable link
 
-    const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_window, stats, signals } = data;
+    const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_beta, rolling_window, stats, signals } = data;
     const { ticker_a, ticker_b } = stats;
 
     // Legend labels
@@ -217,6 +270,8 @@ async function analyze() {
         sub: `Latest ${t1}/${t2} ratio vs period avg (σ)` },
       { label: "Cointegration", value: signals.coint_pvalue === null ? "n/a" : `p = ${fmt(signals.coint_pvalue, 3)}`,
         sub: signals.coint_verdict },
+      { label: "Half-Life", value: signals.half_life === null ? "n/a" : `${fmt(signals.half_life, 1)}d`,
+        sub: signals.half_life_note },
     ];
     document.getElementById("statsGrid").innerHTML = gridStats.map(s => `
       <div class="stat-card">
@@ -315,9 +370,25 @@ async function analyze() {
       },
     });
 
+    // Rolling beta, with the full-period beta as a reference line
+    $("betaWindowLabel").textContent = rolling_window;
+    $("betaLabel").textContent = `${t1} on ${t2}`;
+    charts.rollingBeta = new Chart($("rollingBetaChart"), {
+      type: "line",
+      data: {
+        labels: rollingDates,
+        datasets: [
+          { label: `${rolling_window}-Day Rolling Beta`, data: rolling_beta, borderColor: "#a78bfa", borderWidth: 1.5, pointRadius: 0, tension: 0.1, spanGaps: false },
+          { label: `Full-period beta (${fmt(stats.beta, 2)})`, data: rollingDates.map(() => stats.beta), borderColor: "#6b7280", borderWidth: 1, pointRadius: 0, borderDash: [4, 3] },
+        ]
+      },
+      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: baseScales },
+    });
+
     loadEl.style.display = "none";
     resultsEl.style.display = "block";
     exportBtn.style.display = "inline-block";
+    copyBtn.style.display = "inline-block";
 
   } catch (e) {
     loadEl.style.display = "none";
@@ -329,14 +400,43 @@ async function analyze() {
 }
 
 function exportExcel() {
-  // Named rollWindow so it doesn't hide the browser's global `window` object
-  const { t1, t2, period, window: rollWindow } = lastParams;
-  window.location.href = `${API_BASE}/api/export?a=${t1}&b=${t2}&period=${period}&window=${rollWindow}`;
+  if (lastQuery) location.href = `${API_BASE}/api/export?${lastQuery}`;
+}
+
+async function copyLink() {
+  const btn = $("copyLinkBtn");
+  const box = $("shareLink");
+  try {
+    await navigator.clipboard.writeText(location.href);
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy Link"; }, 2000);
+  } catch {
+    // Some browsers block clipboard access; show the link so it can be copied by hand.
+    box.value = location.href;
+    box.style.display = "block";
+    box.select();
+  }
 }
 
 document.querySelectorAll("input").forEach(el => {
   el.addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
 });
+$("period").addEventListener("change", toggleCustomDates);
+
+// Opening a shared link (e.g. /?a=CRM&b=HUBS&period=1y&window=30) fills the form and runs it.
+(function loadFromUrl() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("a") || !q.get("b")) return;
+  $("ticker1").value = q.get("a");
+  $("ticker2").value = q.get("b");
+  const setIfValid = (id, v) => { if (v && [...$(id).options].some(o => o.value === v)) $(id).value = v; };
+  setIfValid("period", q.get("period"));
+  setIfValid("window", q.get("window"));
+  if (q.get("start")) $("startDate").value = q.get("start");
+  if (q.get("end")) $("endDate").value = q.get("end");
+  toggleCustomDates();
+  analyze();
+})();
 </script>
 </body>
 </html>
