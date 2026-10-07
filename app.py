@@ -5,20 +5,55 @@ from flask import Flask, jsonify, send_from_directory, request, send_file
 from flask_cors import CORS
 import numpy as np
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 app = Flask(__name__, static_folder=".")
 CORS(app)
 
+# Remember downloaded prices so repeat tickers (and SPY) aren't re-fetched on every click.
+CACHE_SECONDS = 4 * 60 * 60
+_price_cache = {}  # ticker -> (fetched_at, dates, prices)
+
+YAHOO_BUSY_MSG = "Yahoo Finance is limiting requests right now. Please wait a few minutes and try again."
+YAHOO_DOWN_MSG = "Couldn't get data from Yahoo Finance right now (the service may be down). Please try again shortly."
+
+
+class DataSourceError(Exception):
+    """Yahoo Finance itself failed (outage or throttling), as opposed to a bad ticker."""
+
+
+def _download_closes(ticker):
+    """Download 5 years of adjusted closes. Returns (dates, prices); empty lists if Yahoo has nothing."""
+    try:
+        hist = yf.Ticker(ticker).history(period="5y", interval="1d", auto_adjust=True)
+    except YFRateLimitError:
+        raise DataSourceError(YAHOO_BUSY_MSG)
+    except Exception:
+        raise DataSourceError(YAHOO_DOWN_MSG)
+
+    if hist is None or hist.empty or "Close" not in hist:
+        return [], []
+    closes = hist["Close"].dropna()
+    return [d.strftime("%Y-%m-%d") for d in closes.index], [float(p) for p in closes.values]
+
 
 def fetch_daily_prices(ticker, api_key=None):
-    """Fetch daily adjusted close prices from Yahoo Finance (no API key needed)."""
-    hist = yf.Ticker(ticker).history(period="5y", interval="1d", auto_adjust=True)
-    if hist is None or hist.empty or "Close" not in hist:
-        raise ValueError(f"No data returned for {ticker}. Check the ticker symbol.")
+    """Fetch daily adjusted close prices from Yahoo Finance (no API key needed), with caching."""
+    cached = _price_cache.get(ticker)
+    if cached and time.time() - cached[0] < CACHE_SECONDS:
+        return cached[1], cached[2]
 
-    closes = hist["Close"].dropna()
-    dates = [d.strftime("%Y-%m-%d") for d in closes.index]
-    prices = [float(p) for p in closes.values]
+    dates, prices = _download_closes(ticker)
+    if not dates:
+        # Empty result: either a bad ticker or Yahoo is failing quietly. Check a known-good ticker to tell which.
+        if ticker != "SPY":
+            spy = _price_cache.get("SPY")
+            spy_ok = bool(spy and time.time() - spy[0] < CACHE_SECONDS) or bool(_download_closes("SPY")[0])
+            if spy_ok:
+                raise ValueError(f"No price data found for {ticker}. Check the ticker symbol.")
+        raise DataSourceError(YAHOO_DOWN_MSG)
+
+    _price_cache[ticker] = (time.time(), dates, prices)
     return dates, prices
 
 
@@ -151,9 +186,7 @@ def compare():
     try:
         # Fetch all three tickers — small delay to respect rate limits
         dates_a, prices_a_full = fetch_daily_prices(ticker_a, api_key)
-        time.sleep(0.5)
         dates_b, prices_b_full = fetch_daily_prices(ticker_b, api_key)
-        time.sleep(0.5)
         dates_spy, prices_spy_full = fetch_daily_prices("SPY", api_key)
 
         # Filter to period
@@ -203,6 +236,8 @@ def compare():
             "prices_spy": [round(p, 4) for p in prices_spy],
         })
 
+    except DataSourceError as e:
+        return jsonify({"error": str(e)}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -230,9 +265,7 @@ def export():
 
     try:
         dates_a, prices_a_full = fetch_daily_prices(ticker_a, api_key)
-        time.sleep(0.5)
         dates_b, prices_b_full = fetch_daily_prices(ticker_b, api_key)
-        time.sleep(0.5)
         dates_spy, prices_spy_full = fetch_daily_prices("SPY", api_key)
 
         dates_a, prices_a_full = filter_by_period(dates_a, prices_a_full, period)
@@ -383,6 +416,8 @@ def export():
             download_name=f"pair_analysis_{ticker_a}_{ticker_b}_{period}.xlsx",
         )
 
+    except DataSourceError as e:
+        return jsonify({"error": str(e)}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
