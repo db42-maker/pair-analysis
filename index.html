@@ -150,7 +150,7 @@
   </div>
 
   <div class="full-width chart-card">
-    <div class="chart-title">Price Spread (A / B Ratio)</div>
+    <div class="chart-title">Price Spread (A / B Ratio) — Period Mean with ±1σ / ±2σ Bands</div>
     <canvas id="spreadChart" height="100"></canvas>
   </div>
 
@@ -197,7 +197,7 @@ async function analyze() {
 
     lastParams = { t1, t2, period, window };
 
-    const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_window, stats } = data;
+    const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_window, stats, signals } = data;
     const { ticker_a, ticker_b } = stats;
 
     // Legend labels
@@ -213,6 +213,10 @@ async function analyze() {
       { label: "Tracking Error", value: fmtPct(stats.tracking_error), sub: "Annualized spread vol" },
       { label: `Vol ${t1}`, value: fmtPct(ticker_a.ann_vol), sub: "Annualized" },
       { label: `Vol ${t2}`, value: fmtPct(ticker_b.ann_vol), sub: "Annualized" },
+      { label: "Spread Z-Score", value: (signals.current_z >= 0 ? "+" : "") + fmt(signals.current_z, 2),
+        sub: `Latest ${t1}/${t2} ratio vs period avg (σ)` },
+      { label: "Cointegration", value: signals.coint_pvalue === null ? "n/a" : `p = ${fmt(signals.coint_pvalue, 3)}`,
+        sub: signals.coint_verdict },
     ];
     document.getElementById("statsGrid").innerHTML = gridStats.map(s => `
       <div class="stat-card">
@@ -271,11 +275,23 @@ async function analyze() {
       },
     });
 
-    // Spread
+    // Spread, with mean and ±1σ / ±2σ bands
+    const flat = v => dates.map(() => v);
+    const band = (label, v, color, dash) => ({ label, data: flat(v), borderColor: color, borderWidth: 1, pointRadius: 0, borderDash: dash });
+    const m = signals.spread_mean, sd = signals.spread_std;
     charts.spread = new Chart(document.getElementById("spreadChart"), {
       type: "line",
-      data: { labels: dates, datasets: [{ label: `${t1}/${t2} Ratio`, data: spread, borderColor: "#4ade80", borderWidth: 1.5, pointRadius: 0, fill: true, backgroundColor: "rgba(74,222,128,0.05)", tension: 0.1 }] },
-      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: baseScales },
+      data: { labels: dates, datasets: [
+        { label: `${t1}/${t2} Ratio`, data: spread, borderColor: "#4ade80", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+        band("Mean", m, "#6b7280", [4, 3]),
+        band("±1σ", m + sd, "rgba(200,169,110,0.6)", [2, 3]),
+        band("±1σ (lower)", m - sd, "rgba(200,169,110,0.6)", [2, 3]),
+        band("±2σ", m + 2 * sd, "rgba(248,113,113,0.7)", [2, 3]),
+        band("±2σ (lower)", m - 2 * sd, "rgba(248,113,113,0.7)", [2, 3]),
+      ] },
+      options: { responsive: true, animation: false,
+        plugins: { legend: { ...legendOpts, labels: { ...legendOpts.labels, filter: item => !item.text.includes("(lower)") } } },
+        scales: baseScales },
     });
 
     // Rolling correlation
@@ -313,8 +329,9 @@ async function analyze() {
 }
 
 function exportExcel() {
-  const { t1, t2, period, window } = lastParams;
-  window.location.href = `${API_BASE}/api/export?a=${t1}&b=${t2}&period=${period}&window=${window}`;
+  // Named rollWindow so it doesn't hide the browser's global `window` object
+  const { t1, t2, period, window: rollWindow } = lastParams;
+  window.location.href = `${API_BASE}/api/export?a=${t1}&b=${t2}&period=${period}&window=${rollWindow}`;
 }
 
 document.querySelectorAll("input").forEach(el => {

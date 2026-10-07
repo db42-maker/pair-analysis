@@ -1,14 +1,33 @@
 import os
 import io
+import hmac
 import time
-from flask import Flask, jsonify, send_from_directory, request, send_file
+from flask import Flask, jsonify, send_from_directory, request, send_file, Response
 from flask_cors import CORS
 import numpy as np
 import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
+from statsmodels.tsa.stattools import coint
 
 app = Flask(__name__, static_folder=".")
 CORS(app)
+
+# Optional shared password. Set APP_PASSWORD in Railway's Variables tab to turn it on;
+# if it's not set, the site stays open to anyone with the link.
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+
+
+@app.before_request
+def require_password():
+    if not APP_PASSWORD:
+        return None
+    auth = request.authorization
+    if auth and auth.password and hmac.compare_digest(auth.password.encode(), APP_PASSWORD.encode()):
+        return None
+    return Response(
+        "Password required.", 401,
+        {"WWW-Authenticate": 'Basic realm="Pair Analysis", charset="UTF-8"'},
+    )
 
 # Remember downloaded prices so repeat tickers (and SPY) aren't re-fetched on every click.
 CACHE_SECONDS = 4 * 60 * 60
@@ -167,6 +186,43 @@ def compute_rolling_correlation(prices_a, prices_b, window=30):
     return rolling
 
 
+MIN_COINT_DAYS = 60
+
+
+def compute_pair_signals(prices_a, prices_b):
+    """Spread z-score (ratio vs its period average) and Engle-Granger cointegration test on log prices."""
+    a = np.array(prices_a, dtype=float)
+    b = np.array(prices_b, dtype=float)
+
+    ratio = a / b
+    mean = float(np.mean(ratio))
+    std = float(np.std(ratio, ddof=1))
+    zscores = ((ratio - mean) / std) if std > 0 else np.zeros_like(ratio)
+
+    log_a, log_b = np.log(a), np.log(b)
+    hedge_ratio = float(np.polyfit(log_b, log_a, 1)[0])
+    p_value = t_stat = None
+    if len(a) >= MIN_COINT_DAYS:
+        t, p, _ = coint(log_a, log_b)
+        t_stat, p_value = round(float(t), 4), round(float(p), 4)
+
+    return {
+        "spread_mean": round(mean, 6),
+        "spread_std": round(std, 6),
+        "zscores": [round(float(z), 4) for z in zscores],
+        "current_z": round(float(zscores[-1]), 4),
+        "coint_pvalue": p_value,
+        "coint_tstat": t_stat,
+        "hedge_ratio": round(hedge_ratio, 4),
+    }
+
+
+def coint_verdict(signals):
+    if signals["coint_pvalue"] is None:
+        return f"Needs {MIN_COINT_DAYS}+ trading days (try a longer period)"
+    return "Likely cointegrated (p < 0.05)" if signals["coint_pvalue"] < 0.05 else "Not cointegrated (p ≥ 0.05)"
+
+
 @app.route("/api/compare")
 def compare():
     ticker_a = request.args.get("a", "").upper().strip()
@@ -219,8 +275,11 @@ def compare():
 
         rolling_corr = compute_rolling_correlation(prices_a, prices_b, window=window)
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
+        signals = compute_pair_signals(prices_a, prices_b)
+        signals["coint_verdict"] = coint_verdict(signals)
 
         return jsonify({
+            "signals": signals,
             "dates": display_dates,
             "indexed_a": idx_a,
             "indexed_b": idx_b,
@@ -278,8 +337,12 @@ def export():
             dates_spy, prices_spy_full
         )
 
+        if len(dates) < 10:
+            return jsonify({"error": "Not enough overlapping data. Check your tickers."}), 400
+
         rolling_corr = compute_rolling_correlation(prices_a, prices_b, window=window)
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
+        signals = compute_pair_signals(prices_a, prices_b)
 
         wb = openpyxl.Workbook()
 
@@ -324,6 +387,10 @@ def export():
             ("R²", stats["r2"]),
             (f"Beta ({ticker_a}/{ticker_b})", stats["beta"]),
             ("Tracking Error (Ann.)", f"{stats['tracking_error']*100:.2f}%"),
+            ("Spread Z-Score (latest)", f"{signals['current_z']:+.2f}"),
+            ("Cointegration p-value", signals["coint_pvalue"] if signals["coint_pvalue"] is not None else "n/a"),
+            ("Cointegration result", coint_verdict(signals)),
+            (f"Hedge Ratio (log {ticker_a} on log {ticker_b})", signals["hedge_ratio"]),
         ]
         for i, (label, val) in enumerate(pair_rows, start=5):
             is_hdr = i == 5
@@ -362,7 +429,7 @@ def export():
                 cell.alignment = center
             ws1.row_dimensions[i].height = 20
 
-        for col, w in [(1, 28), (2, 16), (3, 16)]:
+        for col, w in [(1, 36), (2, 30), (3, 16)]:
             ws1.column_dimensions[get_column_letter(col)].width = w
 
         ws2 = wb.create_sheet("Price Data")
@@ -375,7 +442,7 @@ def export():
 
         headers = ["Date", ticker_a, ticker_b, "SPY",
                    f"{ticker_a} Idx", f"{ticker_b} Idx", "SPY Idx",
-                   f"Spread ({ticker_a}/{ticker_b})", f"Rolling Corr ({window}d)"]
+                   f"Spread ({ticker_a}/{ticker_b})", "Spread Z-Score", f"Rolling Corr ({window}d)"]
         for j, h in enumerate(headers, start=1):
             cell = ws2.cell(row=1, column=j, value=h)
             cell.fill = header_fill
@@ -393,7 +460,9 @@ def export():
                 round(prices_spy[i], 4),
                 idx_a[i], idx_b[i], idx_spy[i],
                 spread[i],
-                rolling_corr[i] if i < len(rolling_corr) else None,
+                signals["zscores"][i],
+                # rolling_corr is returns-based, so entry k belongs to date k+1
+                rolling_corr[i - 1] if i >= 1 else None,
             ]
             for j, val in enumerate(row_vals, start=1):
                 cell = ws2.cell(row=rn, column=j, value=val)
@@ -402,7 +471,7 @@ def export():
                 cell.alignment = center
             ws2.row_dimensions[rn].height = 18
 
-        for col, w in enumerate([14,12,12,12,12,12,12,22,20], start=1):
+        for col, w in enumerate([14,12,12,12,12,12,12,22,16,20], start=1):
             ws2.column_dimensions[get_column_letter(col)].width = w
 
         buf = io.BytesIO()
