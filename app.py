@@ -4,41 +4,21 @@ import time
 from flask import Flask, jsonify, send_from_directory, request, send_file
 from flask_cors import CORS
 import numpy as np
-import requests as req_lib
+import yfinance as yf
 
 app = Flask(__name__, static_folder=".")
 CORS(app)
 
-ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
 
+def fetch_daily_prices(ticker, api_key=None):
+    """Fetch daily adjusted close prices from Yahoo Finance (no API key needed)."""
+    hist = yf.Ticker(ticker).history(period="5y", interval="1d", auto_adjust=True)
+    if hist is None or hist.empty or "Close" not in hist:
+        raise ValueError(f"No data returned for {ticker}. Check the ticker symbol.")
 
-def fetch_daily_prices(ticker, api_key):
-    """Fetch daily adjusted close prices from Alpha Vantage."""
-    url = (
-        f"https://www.alphavantage.co/query"
-        f"?function=TIME_SERIES_DAILY_ADJUSTED"
-        f"&symbol={ticker}"
-        f"&outputsize=full"
-        f"&apikey={api_key}"
-    )
-    r = req_lib.get(url, timeout=15)
-    data = r.json()
-
-    if "Error Message" in data:
-        raise ValueError(f"Ticker not found: {ticker}")
-    if "Note" in data:
-        raise ValueError("Alpha Vantage rate limit hit. Please wait a minute and try again.")
-    if "Information" in data:
-        raise ValueError("Alpha Vantage API limit reached. Please try again later.")
-
-    ts = data.get("Time Series (Daily)", {})
-    if not ts:
-        raise ValueError(f"No data returned for {ticker}")
-
-    # Sort dates ascending
-    sorted_dates = sorted(ts.keys())
-    dates = sorted_dates
-    prices = [float(ts[d]["5. adjusted close"]) for d in sorted_dates]
+    closes = hist["Close"].dropna()
+    dates = [d.strftime("%Y-%m-%d") for d in closes.index]
+    prices = [float(p) for p in closes.values]
     return dates, prices
 
 
@@ -158,7 +138,7 @@ def compare():
     ticker_b = request.args.get("b", "").upper().strip()
     period = request.args.get("period", "1y")
     window = int(request.args.get("window", 30))
-    api_key = ALPHA_VANTAGE_KEY
+    api_key = None
 
     allowed_periods = {"1mo", "3mo", "6mo", "1y", "2y", "5y"}
     if not ticker_a or not ticker_b:
@@ -167,8 +147,6 @@ def compare():
         return jsonify({"error": "Please enter two different tickers."}), 400
     if period not in allowed_periods:
         return jsonify({"error": "Invalid period."}), 400
-    if not api_key:
-        return jsonify({"error": "API key not configured on server."}), 500
 
     try:
         # Fetch all three tickers — small delay to respect rate limits
@@ -244,7 +222,7 @@ def export():
     ticker_b = request.args.get("b", "").upper().strip()
     period = request.args.get("period", "1y")
     window = int(request.args.get("window", 30))
-    api_key = ALPHA_VANTAGE_KEY
+    api_key = None
 
     allowed_periods = {"1mo", "3mo", "6mo", "1y", "2y", "5y"}
     if not ticker_a or not ticker_b or period not in allowed_periods:
