@@ -43,6 +43,10 @@
   #exportBtn { background: var(--surface); color: var(--green); border: 1px solid var(--green); display: none; }
   #copyLinkBtn { background: var(--surface); color: var(--accent2); border: 1px solid var(--accent2); display: none; }
   input[type="date"] { width: 150px; color-scheme: dark; }
+  input.side-input { width: 220px; }
+  .input-hint { text-align: center; color: var(--muted); font-size: 0.65rem; line-height: 1.7; margin: -8px auto 24px; max-width: 640px; }
+  .input-hint code { color: var(--accent); font-family: inherit; }
+  .composition { font-size: 0.65rem; color: var(--muted); margin: -6px 0 10px; line-height: 1.6; }
   #shareLink { display: none; width: 100%; max-width: 600px; margin: -24px auto 32px; font-size: 0.75rem; color: var(--accent2); }
   .signout { display: block; margin-top: 10px; color: var(--muted); }
   .signout:hover { color: var(--accent); }
@@ -91,13 +95,13 @@
 
 <div class="input-row">
   <div class="input-group">
-    <label>Stock A</label>
-    <input id="ticker1" type="text" placeholder="e.g. CRM" maxlength="15" />
+    <label>Side A (Long)</label>
+    <input id="ticker1" class="side-input" type="text" placeholder="e.g. CRM" maxlength="200" />
   </div>
   <div class="vs-badge">vs</div>
   <div class="input-group">
-    <label>Stock B</label>
-    <input id="ticker2" type="text" placeholder="e.g. HUBS" maxlength="15" />
+    <label>Side B (Short)</label>
+    <input id="ticker2" class="side-input" type="text" placeholder="e.g. HUBS" maxlength="200" />
   </div>
   <div class="input-group">
     <label>Period</label>
@@ -130,6 +134,10 @@
     </select>
   </div>
 </div>
+<p class="input-hint">
+  For a basket, separate names with commas: <code>CRM, NOW</code> (equal weight)
+  or add weights: <code>CRM:60, NOW:40</code>. Baskets are fixed-mix, rebalanced daily.
+</p>
 
 <div class="btn-row">
   <button id="analyzeBtn" onclick="analyze()">Analyze</button>
@@ -196,8 +204,8 @@ const $ = id => document.getElementById(id);
 // Current form inputs as URL query parameters (also used for shareable links and the export).
 function currentQuery() {
   const q = new URLSearchParams({
-    a: $("ticker1").value.trim().toUpperCase(),
-    b: $("ticker2").value.trim().toUpperCase(),
+    a: $("ticker1").value.replace(/\s+/g, "").toUpperCase(),
+    b: $("ticker2").value.replace(/\s+/g, "").toUpperCase(),
     period: $("period").value,
     window: $("window").value,
   });
@@ -216,7 +224,7 @@ function toggleCustomDates() {
 
 async function analyze() {
   const query = currentQuery();
-  const t1 = query.get("a"), t2 = query.get("b");
+  let t1 = query.get("a"), t2 = query.get("b");
   const errEl = $("errorMsg");
   const loadEl = $("loadingMsg");
   const resultsEl = $("results");
@@ -252,6 +260,9 @@ async function analyze() {
 
     const { dates, indexed_a, indexed_b, indexed_spy, spread, returns_a, returns_b, rolling_corr, rolling_beta, rolling_window, stats, signals } = data;
     const { ticker_a, ticker_b } = stats;
+    // Display names from the server: "CRM" for a single name, "CRM+NOW" for a basket.
+    t1 = data.label_a;
+    t2 = data.label_b;
 
     // Legend labels
     document.getElementById("legendA").textContent = t1;
@@ -280,16 +291,18 @@ async function analyze() {
         <div class="stat-sub">${s.sub}</div>
       </div>`).join("");
 
-    const stockCard = (t, color) => `
-      <div class="returns-title" style="color:${color}">${t.symbol}</div>
+    const composition = members => members.length < 2 ? "" :
+      `<div class="composition">Basket: ${members.map(m => `${m.ticker} ${(m.weight * 100).toFixed(1)}%`).join(" · ")}</div>`;
+    const stockCard = (t, color, members) => `
+      <div class="returns-title" style="color:${color}">${t.symbol}</div>${composition(members)}
       <div class="ret-row"><span>Total Return</span><span class="${t.total_return >= 0 ? "ret-pos" : "ret-neg"}">${fmtPct(t.total_return)}</span></div>
       <div class="ret-row"><span>Ann. Vol</span><span>${fmtPct(t.ann_vol)}</span></div>
       <div class="ret-row"><span>Sharpe (rf=0)</span><span>${fmt(t.sharpe, 2)}</span></div>
       <div class="ret-row"><span>Max Drawdown</span><span class="ret-neg">-${fmtPct(t.max_drawdown)}</span></div>
       <div class="ret-row"><span>Best Day</span><span class="ret-pos">${fmtPct(t.best_day)}</span></div>
       <div class="ret-row"><span>Worst Day</span><span class="ret-neg">${fmtPct(t.worst_day)}</span></div>`;
-    document.getElementById("statsA").innerHTML = stockCard(ticker_a, "var(--accent)");
-    document.getElementById("statsB").innerHTML = stockCard(ticker_b, "var(--accent2)");
+    document.getElementById("statsA").innerHTML = stockCard(ticker_a, "var(--accent)", data.members_a);
+    document.getElementById("statsB").innerHTML = stockCard(ticker_b, "var(--accent2)", data.members_b);
 
     // Destroy old charts
     Object.values(charts).forEach(c => c && c.destroy());

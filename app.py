@@ -166,21 +166,63 @@ def fetch_daily_prices(ticker):
 # ── Request parsing ─────────────────────────────────────────────────────────
 PERIOD_DAYS = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
 ALLOWED_WINDOWS = {10, 20, 30, 60, 90}
+MAX_NAMES_PER_SIDE = 10
+
+
+def parse_side(raw, side_name):
+    """Parse 'CRM' or 'CRM, NOW' or 'CRM:60, NOW:40' into [(ticker, weight)] with weights summing to 1."""
+    parts = [p for p in raw.upper().replace(" ", "").split(",") if p]
+    if not parts:
+        raise ValueError(f"Please enter at least one ticker for {side_name}.")
+    if len(parts) > MAX_NAMES_PER_SIDE:
+        raise ValueError(f"{side_name[0].upper() + side_name[1:]} has more than {MAX_NAMES_PER_SIDE} names.")
+
+    tickers, weights = [], []
+    for p in parts:
+        ticker, _, weight = p.partition(":")
+        if not TICKER_RE.match(ticker):
+            raise ValueError(f"'{ticker}' doesn't look like a ticker symbol.")
+        if weight:
+            try:
+                w = float(weight.rstrip("%"))
+            except ValueError:
+                raise ValueError(f"'{weight}' isn't a valid weight for {ticker}.")
+            if w <= 0:
+                raise ValueError(f"Weights must be positive ({ticker} has {weight}).")
+            weights.append(w)
+        else:
+            weights.append(None)
+        tickers.append(ticker)
+
+    if len(set(tickers)) != len(tickers):
+        raise ValueError(f"{side_name[0].upper() + side_name[1:]} lists the same ticker twice.")
+    if all(w is None for w in weights):
+        weights = [1.0] * len(tickers)
+    elif any(w is None for w in weights):
+        raise ValueError(f"Give a weight for every name on {side_name}, or for none of them (equal weight).")
+    total = sum(weights)
+    return [(t, w / total) for t, w in zip(tickers, weights)]
+
+
+def side_label(side):
+    return "+".join(t for t, _ in side)
+
+
+def side_composition(side):
+    if len(side) == 1:
+        return side[0][0]
+    return " / ".join(f"{t} {w * 100:.0f}%" for t, w in side)
 
 
 def parse_request_args():
     """Validate query parameters shared by /api/compare and /api/export. Raises ValueError with a friendly message."""
-    ticker_a = request.args.get("a", "").upper().strip()
-    ticker_b = request.args.get("b", "").upper().strip()
+    side_a = parse_side(request.args.get("a", ""), "side A")
+    side_b = parse_side(request.args.get("b", ""), "side B")
     period = request.args.get("period", "1y")
 
-    if not ticker_a or not ticker_b:
-        raise ValueError("Both tickers are required.")
-    for t in (ticker_a, ticker_b):
-        if not TICKER_RE.match(t):
-            raise ValueError(f"'{t}' doesn't look like a ticker symbol.")
-    if ticker_a == ticker_b:
-        raise ValueError("Please enter two different tickers.")
+    overlap = {t for t, _ in side_a} & {t for t, _ in side_b}
+    if overlap:
+        raise ValueError(f"{', '.join(sorted(overlap))} can't be on both sides.")
 
     try:
         window = int(request.args.get("window", 30))
@@ -204,30 +246,36 @@ def parse_request_args():
     else:
         raise ValueError("Invalid period.")
 
-    return ticker_a, ticker_b, period, window, start.isoformat(), end.isoformat()
+    return side_a, side_b, period, window, start.isoformat(), end.isoformat()
 
 
-def filter_by_range(dates, prices, start, end):
-    """Keep observations with start <= date <= end (ISO date strings compare correctly as text)."""
-    kept = [(d, p) for d, p in zip(dates, prices) if start <= d <= end]
-    return [d for d, _ in kept], [p for _, p in kept]
+def basket_levels(side, prices_by_ticker):
+    """A single name keeps its real price. A basket becomes a fixed-mix index starting at 100:
+    each day's basket return is the weighted average of its members' returns (rebalanced daily)."""
+    if len(side) == 1:
+        return prices_by_ticker[side[0][0]]
+    px = np.array([prices_by_ticker[t] for t, _ in side], dtype=float)
+    weights = np.array([w for _, w in side])
+    basket_returns = weights @ (px[:, 1:] / px[:, :-1] - 1)
+    return [float(v) for v in 100 * np.concatenate([[1.0], np.cumprod(1 + basket_returns)])]
 
 
-def align_three(dates_a, prices_a, dates_b, prices_b, dates_c, prices_c):
-    map_a = dict(zip(dates_a, prices_a))
-    map_b = dict(zip(dates_b, prices_b))
-    map_c = dict(zip(dates_c, prices_c))
-    common = sorted(set(map_a.keys()) & set(map_b.keys()) & set(map_c.keys()))
-    return common, [map_a[d] for d in common], [map_b[d] for d in common], [map_c[d] for d in common]
+def load_pair(side_a, side_b, start, end):
+    """Fetch every name plus SPY, cut to the date range, keep only days all of them traded,
+    and build each side's price (or basket index) series."""
+    tickers = list(dict.fromkeys([t for t, _ in side_a] + [t for t, _ in side_b] + ["SPY"]))
+    by_date = {}
+    for t in tickers:
+        dates, prices = fetch_daily_prices(t)
+        by_date[t] = {d: p for d, p in zip(dates, prices) if start <= d <= end}
 
-
-def load_pair(ticker_a, ticker_b, start, end):
-    """Fetch both tickers plus SPY, cut to the date range and keep only days all three traded."""
-    series = [filter_by_range(*fetch_daily_prices(t), start, end) for t in (ticker_a, ticker_b, "SPY")]
-    dates, prices_a, prices_b, prices_spy = align_three(*series[0], *series[1], *series[2])
-    if len(dates) < 10:
+    common = sorted(set.intersection(*(set(m) for m in by_date.values())))
+    if len(common) < 10:
         raise ValueError("Not enough overlapping data for those dates. Check your tickers or pick a longer range.")
-    return dates, prices_a, prices_b, prices_spy
+    prices_by_ticker = {t: [by_date[t][d] for d in common] for t in tickers}
+
+    return (common, basket_levels(side_a, prices_by_ticker), basket_levels(side_b, prices_by_ticker),
+            prices_by_ticker["SPY"], prices_by_ticker)
 
 
 # ── Statistics ──────────────────────────────────────────────────────────────
@@ -375,8 +423,9 @@ def period_label(period, start, end):
 @app.route("/api/compare")
 def compare():
     try:
-        ticker_a, ticker_b, period, window, start, end = parse_request_args()
-        dates, prices_a, prices_b, prices_spy = load_pair(ticker_a, ticker_b, start, end)
+        side_a, side_b, period, window, start, end = parse_request_args()
+        dates, prices_a, prices_b, prices_spy, _ = load_pair(side_a, side_b, start, end)
+        ticker_a, ticker_b = side_label(side_a), side_label(side_b)
 
         display_dates = [datetime.strptime(d, "%Y-%m-%d").strftime("%b %d '%y") for d in dates]
 
@@ -395,8 +444,13 @@ def compare():
         signals["coint_verdict"] = coint_verdict(signals)
         signals["half_life_note"] = half_life_note(signals, len(dates))
 
+        members = lambda side: [{"ticker": t, "weight": round(w, 6)} for t, w in side]
         return jsonify({
             "signals": signals,
+            "label_a": ticker_a,
+            "label_b": ticker_b,
+            "members_a": members(side_a),
+            "members_b": members(side_b),
             "dates": display_dates,
             "start": dates[0],
             "end": dates[-1],
@@ -433,8 +487,10 @@ def export():
         return jsonify({"error": "openpyxl not installed."}), 500
 
     try:
-        ticker_a, ticker_b, period, window, start, end = parse_request_args()
-        dates, prices_a, prices_b, prices_spy = load_pair(ticker_a, ticker_b, start, end)
+        side_a, side_b, period, window, start, end = parse_request_args()
+        dates, prices_a, prices_b, prices_spy, prices_by_ticker = load_pair(side_a, side_b, start, end)
+        ticker_a, ticker_b = side_label(side_a), side_label(side_b)
+        has_basket = len(side_a) > 1 or len(side_b) > 1
 
         rolling_corr, rolling_beta = compute_rolling(prices_a, prices_b, window=window)
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
@@ -469,6 +525,14 @@ def export():
         ws1["A2"].fill = dark_fill
         ws1["A2"].alignment = left
         ws1.row_dimensions[2].height = 18
+
+        if has_basket:
+            ws1.merge_cells("A3:C3")
+            ws1["A3"] = (f"Side A: {side_composition(side_a)}   |   Side B: {side_composition(side_b)}"
+                         "   (fixed-mix baskets, rebalanced daily)")
+            ws1["A3"].font = muted_font
+            ws1["A3"].fill = dark_fill
+            ws1["A3"].alignment = left
 
         ws1.merge_cells("A4:C4")
         ws1["A4"] = "PAIR STATISTICS"
@@ -527,7 +591,7 @@ def export():
                 cell.alignment = center
             ws1.row_dimensions[i].height = 20
 
-        for col, w in [(1, 36), (2, 30), (3, 16)]:
+        for col, w in [(1, 36), (2, 30), (3, 24)]:
             ws1.column_dimensions[get_column_letter(col)].width = w
 
         ws2 = wb.create_sheet("Price Data")
@@ -538,7 +602,8 @@ def export():
         idx_spy = [round(p / prices_spy[0] * 100, 4) for p in prices_spy]
         spread  = [round(a / b, 6) for a, b in zip(prices_a, prices_b)]
 
-        headers = ["Date", ticker_a, ticker_b, "SPY",
+        price_header = lambda side: side_label(side) + (" (basket index)" if len(side) > 1 else "")
+        headers = ["Date", price_header(side_a), price_header(side_b), "SPY",
                    f"{ticker_a} Idx", f"{ticker_b} Idx", "SPY Idx",
                    f"Spread ({ticker_a}/{ticker_b})", "Spread Z-Score",
                    f"Rolling Corr ({window}d)", f"Rolling Beta ({window}d)"]
@@ -573,6 +638,26 @@ def export():
 
         for col, w in enumerate([14,12,12,12,12,12,12,22,16,20,20], start=1):
             ws2.column_dimensions[get_column_letter(col)].width = w
+        if has_basket:
+            ws2.column_dimensions["B"].width = ws2.column_dimensions["C"].width = 26
+
+            # Every member's own adjusted price, so the baskets can be rebuilt or checked by hand.
+            ws3 = wb.create_sheet("Basket Members")
+            ws3.sheet_view.showGridLines = False
+            members = [("A", t, w) for t, w in side_a] + [("B", t, w) for t, w in side_b]
+            for j, h in enumerate(["Date"] + [f"{t} (side {s}, {w * 100:.1f}%)" for s, t, w in members], start=1):
+                cell = ws3.cell(row=1, column=j, value=h)
+                cell.fill = header_fill
+                cell.font = dark_font
+                cell.alignment = center
+                ws3.column_dimensions[get_column_letter(j)].width = 14 if j == 1 else 24
+            for i, date in enumerate(dates):
+                row_vals = [date] + [round(prices_by_ticker[t][i], 4) for _, t, _ in members]
+                for j, val in enumerate(row_vals, start=1):
+                    cell = ws3.cell(row=i + 2, column=j, value=val)
+                    cell.fill = alt_fill if i % 2 == 0 else dark_fill
+                    cell.font = white_font
+                    cell.alignment = center
 
         buf = io.BytesIO()
         wb.save(buf)
