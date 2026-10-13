@@ -13,6 +13,7 @@ import numpy as np
 import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 from statsmodels.tsa.stattools import coint
+import hedge
 
 # static_folder=None so the server never hands out its own source files.
 app = Flask(__name__, static_folder=None)
@@ -77,7 +78,7 @@ def _safe_next(target):
 def require_login():
     if not APP_PASSWORD or request.endpoint in ("login", "logout") or session.get("authed"):
         return None
-    if request.path == "/api/compare":
+    if request.path in ("/api/compare", "/api/hedge"):
         return jsonify({"error": "Your sign-in has expired. Please reload the page and sign in again."}), 401
     return redirect("/login?next=" + quote(_safe_next(request.full_path.rstrip("?")), safe=""))
 
@@ -161,6 +162,27 @@ def fetch_daily_prices(ticker):
 
     _price_cache[ticker] = (time.time(), dates, prices)
     return dates, prices
+
+
+def prefetch(tickers):
+    """Warm the cache for many tickers with one bulk Yahoo download (much faster than one at a time).
+    Tickers that fail here are simply left uncached; fetch_daily_prices will retry or report them."""
+    missing = [t for t in dict.fromkeys(tickers) if not _cached(t)]
+    if len(missing) < 2:
+        return
+    try:
+        data = yf.download(missing, period="max", interval="1d", auto_adjust=True,
+                           group_by="ticker", threads=True, progress=False)
+    except Exception:
+        return
+    now = time.time()
+    for t in missing:
+        try:
+            closes = data[t]["Close"].dropna()
+        except Exception:
+            continue
+        if not closes.empty:
+            _price_cache[t] = (now, [d.strftime("%Y-%m-%d") for d in closes.index], [float(p) for p in closes.values])
 
 
 # ── Request parsing ─────────────────────────────────────────────────────────
@@ -679,13 +701,88 @@ def export():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
-@app.route("/")
-def index():
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), encoding="utf-8") as f:
+MAX_EXTRA_CANDIDATES = 20
+
+
+@app.route("/api/hedge")
+def hedge_api():
+    try:
+        long_side = parse_side(request.args.get("long", ""), "the long")
+        if len(long_side) != 1:
+            raise ValueError("Enter a single ticker to hedge.")
+        long_ticker = long_side[0][0]
+        extras = parse_side(request.args.get("extra", ""), "your extra candidates") if request.args.get("extra", "").strip() else []
+        if len(extras) > MAX_EXTRA_CANDIDATES:
+            raise ValueError(f"Please list at most {MAX_EXTRA_CANDIDATES} extra candidates.")
+
+        period = request.args.get("period", "1y")
+        today = datetime.today().date()
+        if period not in PERIOD_DAYS or PERIOD_DAYS[period] < 90:
+            raise ValueError("Invalid period.")
+        start, end = (today - timedelta(days=PERIOD_DAYS[period])).isoformat(), today.isoformat()
+
+        peers, etfs, sector, industry = hedge.lookup_universe(long_ticker)
+        sources = {}
+        for t, _ in extras:
+            sources[t] = "yours"
+        for t in peers:
+            sources.setdefault(t, "peer")
+        for t in etfs:
+            sources.setdefault(t, "etf")
+        sources.pop(long_ticker, None)
+
+        prefetch([long_ticker] + list(sources))
+        dates, prices = fetch_daily_prices(long_ticker)  # a bad long ticker should be a clear error
+        long_series = {d: p for d, p in zip(dates, prices) if start <= d <= end}
+        if len(long_series) < 60:
+            raise ValueError(f"Not enough price history for {long_ticker} in this period.")
+
+        candidates, skipped = {}, []
+        for t, source in sources.items():
+            try:
+                cd, cp = fetch_daily_prices(t)
+            except (ValueError, DataSourceError):
+                skipped.append({"ticker": t, "reason": "no price data found"})
+                continue
+            candidates[t] = ({d: p for d, p in zip(cd, cp) if start <= d <= end}, source)
+
+        singles, basket, skipped_more = hedge.find_hedges(long_ticker, long_series, candidates)
+        return jsonify({
+            "long": long_ticker,
+            "sector": sector,
+            "industry": industry,
+            "period": period,
+            "days": len(long_series),
+            "singles": singles,
+            "basket": basket,
+            "skipped": skipped + skipped_more,
+            "peer_count": len(peers),
+        })
+
+    except DataSourceError as e:
+        return jsonify({"error": str(e)}), 503
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Hedge search failed: {str(e)}"}), 500
+
+
+def _serve_page(name):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
         html = f.read()
     if APP_PASSWORD:
         html = html.replace("<!--SIGN_OUT-->", '<a href="/logout" class="signout">Sign out</a>')
     return html
+
+
+@app.route("/")
+def index():
+    return _serve_page("index.html")
+
+
+@app.route("/hedge")
+def hedge_page():
+    return _serve_page("hedge.html")
 
 
 if __name__ == "__main__":

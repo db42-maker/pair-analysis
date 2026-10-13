@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hedge Finder</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --surface: #111318;
+    --border: #1e2330;
+    --accent: #c8a96e;
+    --accent2: #5b8dd9;
+    --accent3: #a78bfa;
+    --text: #e8e4dc;
+    --muted: #6b7280;
+    --green: #4ade80;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; min-height: 100vh; padding: 40px 16px; }
+
+  .nav { display: flex; justify-content: center; gap: 24px; margin-bottom: 28px; font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; }
+  .nav a { color: var(--muted); text-decoration: none; padding-bottom: 4px; border-bottom: 1px solid transparent; }
+  .nav a:hover { color: var(--text); }
+  .nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  header { text-align: center; margin-bottom: 40px; }
+  header h1 { font-family: 'Playfair Display', serif; font-size: 2.8rem; color: var(--accent); letter-spacing: -0.5px; }
+  header p { color: var(--muted); font-size: 0.75rem; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
+
+  .input-row { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; align-items: flex-end; }
+  .input-group { display: flex; flex-direction: column; gap: 6px; }
+  label { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+  input, select { background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: 'DM Mono', monospace; font-size: 0.9rem; padding: 10px 14px; border-radius: 4px; outline: none; transition: border-color 0.2s; }
+  input:focus, select:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+  #longTicker { width: 140px; }
+  #extra { width: 260px; }
+  select { width: 140px; }
+
+  .btn-row { display: flex; gap: 12px; justify-content: center; margin-bottom: 32px; }
+  button, .btn { border: none; font-family: 'DM Mono', monospace; font-size: 0.75rem; font-weight: 500; letter-spacing: 2px; text-transform: uppercase; padding: 11px 28px; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; text-decoration: none; display: inline-block; }
+  button:hover, .btn:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #findBtn { background: var(--accent); color: #0a0c10; }
+
+  .error { text-align: center; color: var(--red); font-size: 0.75rem; margin-bottom: 24px; letter-spacing: 1px; }
+  .loading { text-align: center; color: var(--muted); font-size: 0.75rem; letter-spacing: 2px; padding: 40px; }
+  #results { display: none; max-width: 1000px; margin: 0 auto; }
+
+  .summary { text-align: center; color: var(--muted); font-size: 0.75rem; margin-bottom: 24px; line-height: 1.7; }
+  .summary strong { color: var(--text); font-weight: 500; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 24px; margin-bottom: 24px; }
+  .card-title { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .chip { border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; font-size: 0.85rem; }
+  .chip span { color: var(--accent); margin-left: 8px; }
+
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .metric { background: var(--bg); padding: 16px 12px; text-align: center; }
+  .metric-label { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .metric-value { font-family: 'Playfair Display', serif; font-size: 1.4rem; color: var(--accent); }
+  .metric-sub { font-size: 0.6rem; color: var(--muted); margin-top: 4px; }
+
+  .pair-btn { background: var(--surface); color: var(--accent2); border: 1px solid var(--accent2); padding: 8px 16px; font-size: 0.65rem; }
+
+  .filters { display: flex; gap: 6px; }
+  .filters button { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 5px 10px; font-size: 0.6rem; letter-spacing: 1px; }
+  .filters button.on { color: var(--accent); border-color: var(--accent); }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.75rem; min-width: 760px; }
+  th { text-align: right; font-weight: 400; font-size: 0.6rem; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { text-align: right; padding: 9px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:nth-child(-n+3), td:nth-child(-n+3) { text-align: left; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .rank { color: var(--muted); }
+  .tkr { color: var(--text); font-weight: 500; }
+  .badge { font-size: 0.6rem; letter-spacing: 1px; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; border: 1px solid; }
+  .badge.etf { color: var(--accent3); border-color: rgba(167,139,250,0.4); }
+  .badge.peer { color: var(--accent2); border-color: rgba(91,141,217,0.4); }
+  .badge.yours { color: var(--green); border-color: rgba(74,222,128,0.4); }
+  .bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 8px; vertical-align: middle; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .warn { color: var(--red); }
+  .good { color: var(--green); }
+  td a { color: var(--accent2); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+
+  details { color: var(--muted); font-size: 0.7rem; line-height: 1.7; }
+  summary { cursor: pointer; letter-spacing: 1px; }
+  .legend { font-size: 0.7rem; color: var(--muted); line-height: 1.8; }
+  .legend b { color: var(--text); font-weight: 500; }
+
+  .disclaimer { text-align: center; color: var(--muted); font-size: 0.6rem; letter-spacing: 1px; margin-top: 40px; max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.6; }
+  .signout { display: block; margin-top: 10px; color: var(--muted); }
+  .signout:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/">Pair Analysis</a>
+  <a href="/hedge" class="active">Hedge Finder</a>
+</nav>
+
+<header>
+  <h1>Hedge Finder</h1>
+  <p>Find the short that best offsets a long</p>
+</header>
+
+<div class="input-row">
+  <div class="input-group">
+    <label>Stock to hedge</label>
+    <input id="longTicker" type="text" placeholder="e.g. DHI" maxlength="15" />
+  </div>
+  <div class="input-group">
+    <label>Period</label>
+    <select id="period">
+      <option value="3mo">3 Months</option>
+      <option value="6mo">6 Months</option>
+      <option value="1y" selected>1 Year</option>
+      <option value="2y">2 Years</option>
+      <option value="5y">5 Years</option>
+    </select>
+  </div>
+  <div class="input-group">
+    <label>Also consider (optional)</label>
+    <input id="extra" type="text" placeholder="e.g. HUBS, ADBE" maxlength="300" />
+  </div>
+</div>
+
+<div class="btn-row">
+  <button id="findBtn" onclick="findHedges()">Find Hedges</button>
+</div>
+
+<div id="errorMsg" class="error" style="display:none;"></div>
+<div id="loadingMsg" class="loading" style="display:none;">Checking industry peers and ETFs… this can take 10–20 seconds the first time.</div>
+
+<div id="results">
+  <div class="summary" id="summary"></div>
+
+  <div class="card" id="basketCard">
+    <div class="card-title">
+      <span>Best hedge basket (up to 5 names)</span>
+      <a class="btn pair-btn" id="basketPairLink" href="#">Open in Pair Analysis →</a>
+    </div>
+    <div class="chips" id="basketChips"></div>
+    <div class="metrics" id="basketMetrics"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>Single-name and ETF hedges, best first</span>
+      <div class="filters" id="filters">
+        <button class="on" data-f="all">All</button>
+        <button data-f="etf">ETFs</button>
+        <button data-f="peer">Peers</button>
+        <button data-f="yours">Yours</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Hedge</th><th>Type</th>
+            <th>Risk removed</th><th>Holds up?</th><th>Hedge ratio</th>
+            <th>Hedged vol</th><th>Correlation</th><th>Worst 60d corr</th><th>Coint. p</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="hedgeRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <details id="skippedBox">
+      <summary id="skippedSummary"></summary>
+      <div id="skippedList" style="margin-top:10px;"></div>
+    </details>
+  </div>
+
+  <div class="card legend">
+    <div class="card-title">How to read this</div>
+    <b>Risk removed</b> — how much of the long's day-to-day volatility the hedge cancels out over the period (variance reduction). Higher is better.<br>
+    <b>Holds up?</b> — the same measure on data the hedge wasn't fitted to: the hedge is sized on the first two-thirds of the period and tested on the last third. A big drop from "Risk removed" means the fit may not last.<br>
+    <b>Hedge ratio</b> — dollars to short per $1 of the long (the hedge's beta). For the basket it's the total short, split by the weights shown.<br>
+    <b>Hedged vol</b> — annualized volatility of long-minus-hedge, compared with the long on its own.<br>
+    <b>Worst 60d corr</b> — the weakest 60-trading-day stretch of correlation; a low number means the relationship has broken down at times.<br>
+    <b>Coint. p</b> — cointegration test between the long and the hedge; below 0.05 suggests the prices tend to drift back together (useful for a pair trade, not needed for a pure risk hedge).<br>
+    All fits use daily returns and are backward-looking. The basket is fitted on the same data, so lean on the "Holds up?" figure.
+  </div>
+</div>
+
+<p class="disclaimer">Data sourced via Yahoo Finance. For informational purposes only — not investment advice.<!--SIGN_OUT--></p>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastData = null;
+let filter = "all";
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pct = (v, d = 0) => v === null || v === undefined ? "n/a" : (v * 100).toFixed(d) + "%";
+const num = (v, d = 2) => v === null || v === undefined ? "n/a" : v.toFixed(d);
+
+function pairLink(hedgeSpec) {
+  const q = new URLSearchParams({ a: lastData.long, b: hedgeSpec, period: lastData.period, window: "30" });
+  return "/?" + q;
+}
+
+function holdsUp(full, oos) {
+  if (oos === null) return `<span>n/a</span>`;
+  const cls = oos < full - 0.15 ? "warn" : (oos >= full - 0.05 ? "good" : "");
+  return `<span class="${cls}">${pct(oos)}</span>`;
+}
+
+async function findHedges() {
+  const long = $("longTicker").value.replace(/\s+/g, "").toUpperCase();
+  const extra = $("extra").value.replace(/\s+/g, "").toUpperCase();
+  const period = $("period").value;
+  const errEl = $("errorMsg"), loadEl = $("loadingMsg"), btn = $("findBtn");
+
+  errEl.style.display = "none";
+  $("results").style.display = "none";
+  if (!long) { errEl.textContent = "Please enter a stock to hedge."; errEl.style.display = "block"; return; }
+
+  const q = new URLSearchParams({ long, period });
+  if (extra) q.set("extra", extra);
+
+  btn.disabled = true;
+  loadEl.style.display = "block";
+  try {
+    const res = await fetch("/api/hedge?" + q);
+    if (res.status === 401) {
+      location.href = "/login?next=" + encodeURIComponent("/hedge?" + q);
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || "Unknown server error.");
+    lastData = data;
+    history.replaceState(null, "", "/hedge?" + q);
+    render();
+    $("results").style.display = "block";
+  } catch (e) {
+    errEl.textContent = e.message || "Something went wrong.";
+    errEl.style.display = "block";
+  }
+  loadEl.style.display = "none";
+  btn.disabled = false;
+}
+
+function render() {
+  const d = lastData;
+  const longVol = d.singles.length ? d.singles[0].long_vol : null;
+  $("summary").innerHTML =
+    `<strong>${esc(d.long)}</strong>${d.industry ? " · " + esc(d.industry) : ""} · ${d.days} trading days · ` +
+    `unhedged volatility <strong>${pct(longVol)}</strong> · ${d.singles.length} hedges ranked` +
+    (d.peer_count === 0 ? "<br>No industry peers found on Yahoo for this stock, so only ETFs and your picks were checked." : "");
+
+  // Best basket
+  const b = d.basket;
+  $("basketCard").style.display = b ? "block" : "none";
+  if (b) {
+    $("basketChips").innerHTML = b.members.map(m => `<div class="chip">${esc(m.ticker)}<span>${pct(m.weight)}</span></div>`).join("");
+    $("basketMetrics").innerHTML = [
+      ["Risk removed", pct(b.risk_removed), "over the full period"],
+      ["Holds up?", pct(b.risk_removed_oos), "on the last third, unseen"],
+      ["Hedge ratio", "$" + num(b.hedge_ratio), "short per $1 long"],
+      ["Volatility", `${pct(b.long_vol)} → ${pct(b.hedged_vol)}`, "unhedged → hedged"],
+      ["Coint. p", num(b.coint_pvalue, 3), b.coint_pvalue !== null && b.coint_pvalue < 0.05 ? "likely cointegrated" : "not cointegrated"],
+    ].map(([l, v, s]) => `<div class="metric"><div class="metric-label">${l}</div><div class="metric-value">${v}</div><div class="metric-sub">${s}</div></div>`).join("");
+    const spec = b.members.map(m => `${m.ticker}:${Math.round(m.weight * 100)}`).join(",");
+    $("basketPairLink").href = pairLink(spec);
+  }
+
+  renderTable();
+
+  $("skippedSummary").textContent = d.skipped.length
+    ? `${d.skipped.length} candidate${d.skipped.length > 1 ? "s" : ""} not ranked (click to see why)`
+    : "Every candidate was ranked.";
+  $("skippedList").innerHTML = d.skipped.map(s => `${esc(s.ticker)} — ${esc(s.reason)}`).join("<br>");
+}
+
+function renderTable() {
+  const rows = lastData.singles
+    .map((s, i) => ({ ...s, rank: i + 1 }))
+    .filter(s => filter === "all" || s.source === filter);
+  $("hedgeRows").innerHTML = rows.length ? rows.map(s => `
+    <tr>
+      <td class="rank">${s.rank}</td>
+      <td class="tkr">${esc(s.ticker)}</td>
+      <td><span class="badge ${esc(s.source)}">${s.source === "yours" ? "Yours" : esc(s.source)}</span></td>
+      <td><span class="bar"><i style="width:${Math.max(0, s.risk_removed) * 100}%"></i></span>${pct(s.risk_removed)}</td>
+      <td>${holdsUp(s.risk_removed, s.risk_removed_oos)}</td>
+      <td>$${num(s.hedge_ratio)}</td>
+      <td>${pct(s.hedged_vol)}</td>
+      <td>${num(s.correlation)}</td>
+      <td>${num(s.worst_corr)}</td>
+      <td>${num(s.coint_pvalue, 3)}</td>
+      <td><a href="${pairLink(s.ticker)}">Pair →</a></td>
+    </tr>`).join("") : `<tr><td colspan="11" style="text-align:center;color:var(--muted)">No hedges of this type.</td></tr>`;
+}
+
+$("filters").addEventListener("click", e => {
+  const f = e.target.dataset.f;
+  if (!f) return;
+  filter = f;
+  document.querySelectorAll("#filters button").forEach(b => b.classList.toggle("on", b.dataset.f === f));
+  if (lastData) renderTable();
+});
+
+document.querySelectorAll("input").forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter") findHedges(); }));
+
+// Shared links like /hedge?long=DHI&period=1y run automatically.
+(function loadFromUrl() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("long")) return;
+  $("longTicker").value = q.get("long");
+  if (q.get("extra")) $("extra").value = q.get("extra");
+  const p = q.get("period");
+  if (p && [...$("period").options].some(o => o.value === p)) $("period").value = p;
+  findHedges();
+})();
+</script>
+</body>
+</html>
