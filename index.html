@@ -88,6 +88,16 @@
   .disclaimer { text-align: center; color: var(--muted); font-size: 0.6rem; letter-spacing: 1px; margin-top: 40px; max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.6; }
 
   .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+
+  .table-wrap { overflow-x: auto; }
+  .sens-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+  .sens-table th { color: var(--muted); font-weight: 400; font-size: 0.58rem; letter-spacing: 1.5px; text-transform: uppercase; padding: 6px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  .sens-table th.group { text-align: center; color: var(--accent); border-bottom: 1px solid var(--border); }
+  .sens-table td { padding: 7px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .sens-table th.l, .sens-table td.l { text-align: left; }
+  .sens-table tr:last-child td { border-bottom: none; }
+  .sens-table .dim { color: var(--muted); }
+  .chart-note { font-size: 0.62rem; color: var(--muted); line-height: 1.7; margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -168,6 +178,7 @@
         <span style="color:var(--accent)">■</span> <span style="font-size:0.6rem" id="legendA"></span> &nbsp;
         <span style="color:var(--accent2)">■</span> <span style="font-size:0.6rem" id="legendB"></span> &nbsp;
         <span style="color:var(--accent3)">■</span> <span style="font-size:0.6rem">SPY</span>
+        <span id="legendYield">&nbsp; <span style="color:var(--green)">■</span> <span style="font-size:0.6rem">10Y yield (right axis)</span></span>
       </div>
       <canvas id="priceChart" height="200"></canvas>
     </div>
@@ -180,6 +191,12 @@
   <div class="returns-row">
     <div class="returns-card" id="statsA"></div>
     <div class="returns-card" id="statsB"></div>
+  </div>
+
+  <div class="full-width chart-card">
+    <div class="chart-title">Market &amp; Rate Sensitivity — Regression on Daily Returns</div>
+    <div class="table-wrap"><table class="sens-table" id="sensTable"></table></div>
+    <div class="chart-note" id="sensNote"></div>
   </div>
 
   <div class="full-width chart-card">
@@ -312,6 +329,7 @@ async function analyze() {
       <div class="ret-row"><span>Worst Day</span><span class="ret-neg">${fmtPct(t.worst_day)}</span></div>`;
     document.getElementById("statsA").innerHTML = stockCard(ticker_a, "var(--accent)", data.members_a);
     document.getElementById("statsB").innerHTML = stockCard(ticker_b, "var(--accent2)", data.members_b);
+    renderSensitivity(data.sensitivity);
 
     // Destroy old charts
     Object.values(charts).forEach(c => c && c.destroy());
@@ -332,10 +350,18 @@ async function analyze() {
     if (indexed_spy) {
       priceDatasets.push({ label: "SPY", data: indexed_spy, borderColor: "#a78bfa", borderWidth: 1.2, pointRadius: 0, tension: 0.1, borderDash: [4, 3] });
     }
+    const priceScales = { ...baseScales };
+    if (data.yield_10y) {
+      priceDatasets.push({ label: "10Y yield (%)", data: data.yield_10y, yAxisID: "yRate", borderColor: "#4ade80",
+                           borderWidth: 1, pointRadius: 0, tension: 0.1, borderDash: [2, 2] });
+      priceScales.yRate = { position: "right", grid: { display: false },
+                            ticks: { color: "#4ade80", font: { size: 9 }, callback: v => v.toFixed(2) + "%" } };
+    }
+    $("legendYield").style.display = data.yield_10y ? "inline" : "none";
     charts.price = new Chart(document.getElementById("priceChart"), {
       type: "line",
       data: { labels: dates, datasets: priceDatasets },
-      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: baseScales },
+      options: { responsive: true, animation: false, plugins: { legend: legendOpts }, scales: priceScales },
     });
 
     // Scatter
@@ -419,6 +445,38 @@ async function analyze() {
   }
 
   btn.disabled = false;
+}
+
+// Regression of each side (and the long/short spread) on SPY and on daily 10-year yield changes.
+function renderSensitivity(sens) {
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const sig = t => Math.abs(t) >= 1.96 ? "" : ' class="dim" title="Not statistically significant (|t| < 1.96)"';
+  const signed = (x, d) => (x >= 0 ? "+" : "") + x.toFixed(d);
+  const rates = sens.yield_available;
+  const colors = ["var(--accent)", "var(--accent2)", "var(--text)"];
+
+  $("sensTable").innerHTML = `
+    <thead>
+      <tr><th class="l"></th><th class="group" colspan="4">vs S&amp;P 500 (SPY)</th>
+          ${rates ? '<th class="group" colspan="6">vs 10-Year Treasury Yield</th>' : ""}</tr>
+      <tr><th class="l">Series</th><th>Beta</th><th>Corr</th><th>R²</th><th>t-stat</th>
+          ${rates ? "<th>Beta / 100bp</th><th>Corr</th><th>R²</th><th>t-stat</th><th>Beta ex-Mkt</th><th>t-stat</th>" : ""}</tr>
+    </thead>
+    <tbody>${sens.rows.map((r, i) => {
+      const m = r.market, y = r.rates;
+      return `<tr><td class="l" style="color:${colors[i]}">${esc(r.label)}</td>
+        <td${sig(m.t)}>${m.beta.toFixed(2)}</td><td>${m.corr.toFixed(2)}</td><td>${m.r2.toFixed(2)}</td><td${sig(m.t)}>${m.t.toFixed(1)}</td>
+        ${y ? `<td${sig(y.t)}>${signed(y.beta, 2)}%</td><td>${y.corr.toFixed(2)}</td><td>${y.r2.toFixed(2)}</td><td${sig(y.t)}>${y.t.toFixed(1)}</td>
+               <td${sig(y.t_ex_mkt)}>${signed(y.beta_ex_mkt, 2)}%</td><td${sig(y.t_ex_mkt)}>${y.t_ex_mkt.toFixed(1)}</td>` : ""}</tr>`;
+    }).join("")}</tbody>`;
+
+  $("sensNote").textContent = rates
+    ? `Rate beta is the % daily return for a +100bp move in the 10-year yield (negative = falls when yields rise). ` +
+      `"Ex-Mkt" is fitted together with SPY, so it shows rate exposure beyond what the market explains ` +
+      `(SPY vs yield changes: corr ${sens.spy_rate_corr.toFixed(2)}). ` +
+      `10Y yield moved ${sens.yield_start.toFixed(2)}% → ${sens.yield_end.toFixed(2)}% (${signed(sens.yield_change_bp, 0)}bp) over the period. ` +
+      `Greyed figures are not statistically significant (|t| < 1.96).`
+    : "10-year Treasury data couldn't be loaded from Yahoo right now, so only the market regression is shown.";
 }
 
 function exportExcel() {

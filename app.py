@@ -300,6 +300,25 @@ def load_pair(side_a, side_b, start, end):
             prices_by_ticker["SPY"], prices_by_ticker)
 
 
+TREASURY_10Y = "^TNX"  # CBOE 10-year Treasury yield index, quoted in percent (4.25 = 4.25%)
+
+
+def load_treasury_yields(dates):
+    """10-year yield on each of the pair's dates, carrying the last quote across a bond-market holiday.
+    Returns None if Yahoo can't supply it, so the rest of the analysis still works."""
+    try:
+        y_dates, y_values = fetch_daily_prices(TREASURY_10Y)
+    except (ValueError, DataSourceError):
+        return None
+    out, j, last = [], 0, None
+    for d in dates:
+        while j < len(y_dates) and y_dates[j] <= d:
+            last = y_values[j]
+            j += 1
+        out.append(last)
+    return None if out[0] is None else out
+
+
 # ── Statistics ──────────────────────────────────────────────────────────────
 def daily_returns(prices):
     arr = np.array(prices, dtype=float)
@@ -379,6 +398,50 @@ def compute_rolling(prices_a, prices_b, window=30):
         var_b = float(np.var(b_slice, ddof=1))
         beta.append(round(float(np.cov(a_slice, b_slice)[0, 1]) / var_b, 4) if var_b > 0 else None)
     return corr, beta
+
+
+def _ols(y, X):
+    """OLS of y on [1, X]. Returns (slopes, t-stats, r2)."""
+    A = np.column_stack([np.ones(len(y)), X])
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    resid = y - A @ coef
+    dof = len(y) - A.shape[1]
+    s2 = float(resid @ resid) / dof if dof > 0 else 0.0
+    se = np.sqrt(np.diag(s2 * np.linalg.pinv(A.T @ A)))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1 - float(resid @ resid) / ss_tot if ss_tot > 0 else 0.0
+    t = np.divide(coef, se, out=np.zeros_like(coef), where=se > 0)
+    return coef[1:], t[1:], r2
+
+
+def compute_sensitivity(prices_a, prices_b, prices_spy, yields, ticker_a, ticker_b):
+    """Regress daily returns of A, B and the long-A / short-B spread on SPY and on 10-year yield changes.
+    Rate betas are % return per +100bp move in the 10-year yield."""
+    ret_a, ret_b = daily_returns(prices_a), daily_returns(prices_b)
+    spy = daily_returns(prices_spy)
+    dy = np.diff(np.array(yields, dtype=float)) if yields else None  # percentage points, so 1.0 = 100bp
+
+    def r(x, n=4):
+        return round(float(x), n)
+
+    rows = []
+    for label, ret in ((ticker_a, ret_a), (ticker_b, ret_b), (f"Long {ticker_a} / Short {ticker_b}", ret_a - ret_b)):
+        (b_mkt,), (t_mkt,), r2_mkt = _ols(ret, spy[:, None])
+        row = {"label": label,
+               "market": {"beta": r(b_mkt), "corr": r(np.corrcoef(ret, spy)[0, 1]), "r2": r(r2_mkt), "t": r(t_mkt, 2)}}
+        if dy is not None and np.std(dy) > 0:
+            (b_rate,), (t_rate,), r2_rate = _ols(ret, dy[:, None])
+            (_, b_adj), (_, t_adj), _ = _ols(ret, np.column_stack([spy, dy]))
+            row["rates"] = {"beta": r(b_rate * 100, 2), "corr": r(np.corrcoef(ret, dy)[0, 1]), "r2": r(r2_rate),
+                            "t": r(t_rate, 2), "beta_ex_mkt": r(b_adj * 100, 2), "t_ex_mkt": r(t_adj, 2)}
+        rows.append(row)
+
+    out = {"rows": rows, "yield_available": dy is not None}
+    if dy is not None:
+        out.update(yield_start=r(yields[0], 3), yield_end=r(yields[-1], 3),
+                   yield_change_bp=r((yields[-1] - yields[0]) * 100, 0),
+                   spy_rate_corr=r(np.corrcoef(spy, dy)[0, 1]))
+    return out
 
 
 MIN_COINT_DAYS = 60
@@ -465,6 +528,8 @@ def compare():
         signals = compute_pair_signals(prices_a, prices_b)
         signals["coint_verdict"] = coint_verdict(signals)
         signals["half_life_note"] = half_life_note(signals, len(dates))
+        yields = load_treasury_yields(dates)
+        sensitivity = compute_sensitivity(prices_a, prices_b, prices_spy, yields, ticker_a, ticker_b)
 
         members = lambda side: [{"ticker": t, "weight": round(w, 6)} for t, w in side]
         return jsonify({
@@ -486,6 +551,8 @@ def compare():
             "rolling_beta": rolling_beta,
             "rolling_window": window,
             "stats": stats,
+            "sensitivity": sensitivity,
+            "yield_10y": [round(y, 3) for y in yields] if yields else None,
             "prices_a": [round(p, 4) for p in prices_a],
             "prices_b": [round(p, 4) for p in prices_b],
             "prices_spy": [round(p, 4) for p in prices_spy],
@@ -517,6 +584,8 @@ def export():
         rolling_corr, rolling_beta = compute_rolling(prices_a, prices_b, window=window)
         stats = compute_stats(prices_a, prices_b, ticker_a, ticker_b)
         signals = compute_pair_signals(prices_a, prices_b)
+        yields = load_treasury_yields(dates)
+        sensitivity = compute_sensitivity(prices_a, prices_b, prices_spy, yields, ticker_a, ticker_b)
 
         wb = openpyxl.Workbook()
 
@@ -613,7 +682,37 @@ def export():
                 cell.alignment = center
             ws1.row_dimensions[i].height = 20
 
-        for col, w in [(1, 36), (2, 30), (3, 24)]:
+        mr = sr + len(stock_rows) + 2
+        ws1.merge_cells(f"A{mr}:H{mr}")
+        ws1[f"A{mr}"] = ("MARKET & RATE SENSITIVITY (daily returns; rate beta = % return per +100bp in the 10Y yield)"
+                         if sensitivity["yield_available"] else "MARKET SENSITIVITY (10-year Treasury data unavailable)")
+        ws1[f"A{mr}"].font = Font(color="C8A96E", bold=True, name="Courier New", size=10)
+        ws1[f"A{mr}"].fill = dark_fill
+        ws1[f"A{mr}"].alignment = left
+        ws1.row_dimensions[mr].height = 20
+
+        sens_rows = [("Series", "SPY Beta", "SPY Corr", "SPY R²", "10Y Beta", "10Y Corr", "10Y R²", "10Y Beta ex-Mkt")]
+        for row in sensitivity["rows"]:
+            m, rt = row["market"], row.get("rates")
+            sens_rows.append((row["label"], m["beta"], m["corr"], m["r2"],
+                              *((f"{rt['beta']:+.2f}%", rt["corr"], rt["r2"], f"{rt['beta_ex_mkt']:+.2f}%") if rt else ("n/a",) * 4)))
+        for i, row_data in enumerate(sens_rows, start=mr + 1):
+            is_hdr = i == mr + 1
+            for j, v in enumerate(row_data, start=1):
+                cell = ws1.cell(row=i, column=j, value=v)
+                cell.fill = header_fill if is_hdr else (alt_fill if i % 2 == 0 else dark_fill)
+                cell.font = dark_font if is_hdr else white_font
+                cell.alignment = center
+            ws1.row_dimensions[i].height = 20
+        if sensitivity["yield_available"]:
+            note_row = mr + len(sens_rows) + 1
+            ws1.merge_cells(f"A{note_row}:H{note_row}")
+            ws1[f"A{note_row}"] = (f"10Y yield {sensitivity['yield_start']:.2f}% → {sensitivity['yield_end']:.2f}% "
+                                   f"({sensitivity['yield_change_bp']:+.0f}bp). Ex-market beta is fitted jointly with SPY.")
+            ws1[f"A{note_row}"].font = muted_font
+            ws1[f"A{note_row}"].fill = dark_fill
+
+        for col, w in [(1, 36), (2, 30), (3, 24), (4, 12), (5, 12), (6, 12), (7, 12), (8, 18)]:
             ws1.column_dimensions[get_column_letter(col)].width = w
 
         ws2 = wb.create_sheet("Price Data")
@@ -628,7 +727,7 @@ def export():
         headers = ["Date", price_header(side_a), price_header(side_b), "SPY",
                    f"{ticker_a} Idx", f"{ticker_b} Idx", "SPY Idx",
                    f"Spread ({ticker_a}/{ticker_b})", "Spread Z-Score",
-                   f"Rolling Corr ({window}d)", f"Rolling Beta ({window}d)"]
+                   f"Rolling Corr ({window}d)", f"Rolling Beta ({window}d)", "10Y Yield (%)"]
         for j, h in enumerate(headers, start=1):
             cell = ws2.cell(row=1, column=j, value=h)
             cell.fill = header_fill
@@ -650,6 +749,7 @@ def export():
                 # rolling series are returns-based, so entry k belongs to date k+1
                 rolling_corr[i - 1] if i >= 1 else None,
                 rolling_beta[i - 1] if i >= 1 else None,
+                round(yields[i], 3) if yields else None,
             ]
             for j, val in enumerate(row_vals, start=1):
                 cell = ws2.cell(row=rn, column=j, value=val)
@@ -658,7 +758,7 @@ def export():
                 cell.alignment = center
             ws2.row_dimensions[rn].height = 18
 
-        for col, w in enumerate([14,12,12,12,12,12,12,22,16,20,20], start=1):
+        for col, w in enumerate([14,12,12,12,12,12,12,22,16,20,20,14], start=1):
             ws2.column_dimensions[get_column_letter(col)].width = w
         if has_basket:
             ws2.column_dimensions["B"].width = ws2.column_dimensions["C"].width = 26
