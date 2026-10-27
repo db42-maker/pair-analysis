@@ -1,0 +1,9 @@
+[
+  {"ticker": "AOS",  "name": "A. O. Smith"},
+  {"ticker": "BALL", "name": "Ball Corp"},
+  {"ticker": "CHTR", "name": "Charter Communications"},
+  {"ticker": "CMPR", "name": "Cimpress"},
+  {"ticker": "CRM",  "name": "Salesforce"},
+  {"ticker": "OTIS", "name": "Otis Worldwide"},
+  {"ticker": "PRMB", "name": "Primo Brands"}
+]

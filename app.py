@@ -14,6 +14,7 @@ import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 from statsmodels.tsa.stattools import coint
 import hedge
+import earnings
 
 # static_folder=None so the server never hands out its own source files.
 app = Flask(__name__, static_folder=None)
@@ -78,7 +79,9 @@ def _safe_next(target):
 def require_login():
     if not APP_PASSWORD or request.endpoint in ("login", "logout") or session.get("authed"):
         return None
-    if request.path in ("/api/compare", "/api/hedge"):
+    # Pages fetch /api/* in the background, so answer those with JSON. The Excel export is a normal
+    # navigation, so it goes through the sign-in page like any other link.
+    if request.path.startswith("/api/") and request.path != "/api/export":
         return jsonify({"error": "Your sign-in has expired. Please reload the page and sign in again."}), 401
     return redirect("/login?next=" + quote(_safe_next(request.full_path.rstrip("?")), safe=""))
 
@@ -867,6 +870,76 @@ def hedge_api():
         return jsonify({"error": f"Hedge search failed: {str(e)}"}), 500
 
 
+# ── Earnings calendar ───────────────────────────────────────────────────────
+def _iso_date(raw, what="date"):
+    try:
+        return datetime.strptime(raw or "", "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise ValueError(f"Invalid {what}.")
+
+
+def _covered_ticker(raw):
+    ticker = (raw or "").strip().upper()
+    if ticker not in earnings.coverage_tickers():
+        raise ValueError(f"{ticker or 'That company'} isn't on the coverage list.")
+    return ticker
+
+
+@app.route("/api/calendar")
+def calendar_api():
+    try:
+        start, end = _iso_date(request.args.get("start"), "start date"), _iso_date(request.args.get("end"), "end date")
+        if start > end or (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days > 62:
+            raise ValueError("Pick a range of two months or less.")
+        events, unavailable = earnings.events_between(start, end)
+        return jsonify({"events": events, "unavailable": unavailable, "coverage": earnings.load_coverage(),
+                        "timings": earnings.TIMINGS, "storage_persistent": earnings.STORAGE_PERSISTENT})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Couldn't load the calendar: {str(e)}"}), 500
+
+
+@app.route("/api/preview", methods=["GET", "POST"])
+def preview_api():
+    try:
+        if request.method == "GET":
+            ticker = _covered_ticker(request.args.get("ticker"))
+            return jsonify({"preview": earnings.get_preview(ticker, _iso_date(request.args.get("date")))})
+        body = request.get_json(silent=True) or {}
+        ticker, event_date = _covered_ticker(body.get("ticker")), _iso_date(body.get("date"))
+        text = body.get("body") or ""
+        if len(text) > earnings.MAX_PREVIEW_CHARS:
+            raise ValueError("That preview is too long.")
+        earnings.save_preview(ticker, event_date, text)
+        return jsonify({"preview": earnings.get_preview(ticker, event_date)})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Couldn't save the preview: {str(e)}"}), 500
+
+
+@app.route("/api/earnings-date", methods=["POST"])
+def earnings_date_api():
+    """Pin a confirmed date/time for an event ({ticker, date, timing, replaces}), or {ticker, date, clear: true}."""
+    try:
+        body = request.get_json(silent=True) or {}
+        ticker, event_date = _covered_ticker(body.get("ticker")), _iso_date(body.get("date"))
+        if body.get("clear"):
+            earnings.clear_date_override(ticker, event_date)
+        else:
+            timing = body.get("timing", "unknown")
+            if timing not in earnings.TIMINGS:
+                raise ValueError("Invalid time of day.")
+            replaces = _iso_date(body["replaces"], "original date") if body.get("replaces") else None
+            earnings.set_date_override(ticker, event_date, timing, replaces)
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Couldn't save the date: {str(e)}"}), 500
+
+
 def _serve_page(name):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
         html = f.read()
@@ -883,6 +956,11 @@ def index():
 @app.route("/hedge")
 def hedge_page():
     return _serve_page("hedge.html")
+
+
+@app.route("/calendar")
+def calendar_page():
+    return _serve_page("calendar.html")
 
 
 if __name__ == "__main__":
