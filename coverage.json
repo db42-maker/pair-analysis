@@ -1,9 +1,13 @@
 [
-  {"ticker": "AOS",  "name": "A. O. Smith"},
-  {"ticker": "BALL", "name": "Ball Corp"},
-  {"ticker": "CHTR", "name": "Charter Communications"},
-  {"ticker": "CMPR", "name": "Cimpress"},
-  {"ticker": "CRM",  "name": "Salesforce"},
-  {"ticker": "OTIS", "name": "Otis Worldwide"},
-  {"ticker": "PRMB", "name": "Primo Brands"}
+  {"ticker": "AOS",    "name": "A. O. Smith"},
+  {"ticker": "BALL",   "name": "Ball Corp"},
+  {"ticker": "CHTR",   "name": "Charter Communications"},
+  {"ticker": "CMPR",   "name": "Cimpress"},
+  {"ticker": "CRM",    "name": "Salesforce"},
+  {"ticker": "NFI.TO", "name": "NFI Group", "label": "NFI"},
+  {"ticker": "OTIS",   "name": "Otis Worldwide"},
+  {"ticker": "POOL",   "name": "Pool Corp"},
+  {"ticker": "PRMB",   "name": "Primo Brands"},
+  {"ticker": "SLM",    "name": "SLM Corp (Sallie Mae)"},
+  {"ticker": "VLTO",   "name": "Veralto"}
 ]

@@ -142,7 +142,7 @@
 <main>
   <div id="storageBanner" class="banner" style="display:none;">
     Previews and confirmed dates aren't being saved to permanent storage, so they'll be lost the next time the site
-    is redeployed. Attach a Railway volume and set <code>DATA_DIR</code> to its mount path to fix this.
+    is redeployed. Attach a Railway volume to this service to fix this.
   </div>
   <div id="unavailableBanner" class="banner info" style="display:none;"></div>
 
@@ -234,7 +234,7 @@ function chip(e) {
   const short = { bmo: "BMO", amc: "AMC", dmh: "DMH", unknown: "TBD" }[e.timing];
   return `<button class="chip ${cls}" onclick="openEvent('${e.ticker}', '${e.date}')"
             title="${esc(e.name)} — ${esc(e.timing_label)}${e.estimated ? " (unconfirmed)" : ""}">
-            ${e.has_preview ? '<i class="dot" title="Preview written"></i>' : ""}${esc(e.ticker)}<span class="t">${short}</span></button>`;
+            ${e.has_preview ? '<i class="dot" title="Preview written"></i>' : ""}${esc(e.label)}<span class="t">${short}</span></button>`;
 }
 
 function render() {
@@ -295,7 +295,7 @@ async function openEvent(ticker, date) {
     : e.estimated ? `Unconfirmed — Yahoo estimate${e.window ? ` (${e.window})` : ""}` : "Yahoo Finance";
   const past = e.date < todayIso();
   openPanel(`
-    <h2>${esc(e.ticker)}</h2>
+    <h2>${esc(e.label)}</h2>
     <div class="sub">${esc(e.name)}</div>
     <div class="facts">
       <div class="fact"><div class="k">Reports</div><div class="v">${longDate(e.date)}</div></div>
@@ -427,7 +427,7 @@ function openAddDate() {
     <h2>Add an Earnings Date</h2>
     <div class="sub">For a covered company whose date Yahoo doesn't have yet, or has wrong.</div>
     <div class="form-row" style="margin-top:24px">
-      <div><label>Company</label><select id="addTicker">${state.coverage.map(c => `<option value="${esc(c.ticker)}">${esc(c.ticker)} — ${esc(c.name)}</option>`).join("")}</select></div>
+      <div><label>Company</label><select id="addTicker">${state.coverage.map(c => `<option value="${esc(c.ticker)}">${esc(c.label)} — ${esc(c.name)}</option>`).join("")}</select></div>
     </div>
     <div class="form-row">
       <div><label>Date</label><input type="date" id="addDate" value="${todayIso()}"></div>

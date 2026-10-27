@@ -1,8 +1,8 @@
 """Earnings calendar for the companies we follow.
 
 Dates come from Yahoo Finance (cached), with manual overrides layered on top. Overrides and the
-written call previews live in a small SQLite database under DATA_DIR. On Railway, DATA_DIR must
-point at a mounted volume, or everything saved is lost on the next deploy.
+written call previews live in a small SQLite database on Railway's attached volume (found through
+RAILWAY_VOLUME_MOUNT_PATH, which Railway sets itself). Without a volume, saves are lost on redeploy.
 """
 
 import json
@@ -17,12 +17,13 @@ import yfinance as yf
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COVERAGE_PATH = os.path.join(BASE_DIR, "coverage.json")
-DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "data")
+VOLUME_DIR = os.environ.get("DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+DATA_DIR = VOLUME_DIR or os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "calendar.db")
 
-# On Railway the app's own disk is wiped on every deploy; only a mounted volume (DATA_DIR) survives.
+# On Railway the app's own disk is wiped on every deploy; only an attached volume survives.
 ON_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT_NAME") or os.environ.get("RAILWAY_ENVIRONMENT"))
-STORAGE_PERSISTENT = bool(os.environ.get("DATA_DIR")) or not ON_RAILWAY
+STORAGE_PERSISTENT = bool(VOLUME_DIR) or not ON_RAILWAY
 
 TIMINGS = {"bmo": "Before open", "amc": "After close", "dmh": "During market", "unknown": "Time TBD"}
 MATCH_DAYS = 21          # a preview or override within this many days of an event belongs to that event
@@ -36,7 +37,9 @@ def load_coverage():
     """[{'ticker': 'OTIS', 'name': 'Otis Worldwide'}, …] from coverage.json, read fresh each time."""
     with open(COVERAGE_PATH, encoding="utf-8") as f:
         rows = json.load(f)
-    return [{"ticker": r["ticker"].strip().upper(), "name": r.get("name") or r["ticker"]} for r in rows]
+    # "ticker" is Yahoo's symbol (NFI.TO); "label" is what the calendar shows (NFI).
+    return [{"ticker": r["ticker"].strip().upper(), "name": r.get("name") or r["ticker"],
+             "label": r.get("label") or r["ticker"].strip().upper()} for r in rows]
 
 
 def coverage_tickers():
@@ -138,11 +141,16 @@ def yahoo_events(ticker):
     hit = _yahoo_cache.get(ticker)
     if hit and time.time() - hit[0] < CACHE_SECONDS:
         return hit[1]
-    try:
-        tk = yf.Ticker(ticker)
-        df = tk.get_earnings_dates(limit=12)
-    except Exception:
-        return None
+    tk = yf.Ticker(ticker)
+    df, history_ok = None, False
+    for attempt in range(2):  # Yahoo drops this request now and then; one retry usually gets through
+        try:
+            df, history_ok = tk.get_earnings_dates(limit=12), True
+            break
+        except Exception:
+            time.sleep(1)
+    if not history_ok and hit:
+        return hit[1]  # an expired copy beats a date with no time; retried on the next load
 
     events = []
     if df is not None and not df.empty:
@@ -175,6 +183,14 @@ def yahoo_events(ticker):
             match = events[-1:]
         for e in match:
             e.update(estimated=True, window=f"{window[0]:%b %d} – {window[-1]:%b %d}")
+
+    if not history_ok:
+        if len(window) == 1:
+            events.append({"date": window[0].isoformat(), "timing": "unknown", "eps_estimate": None,
+                           "eps_reported": None, "estimated": False})
+        if not events:
+            return None
+        return events  # partial result: don't cache, so the full history is retried next load
 
     _yahoo_cache[ticker] = (time.time(), events)
     return events
@@ -212,7 +228,7 @@ def events_between(start, end):
             if start <= e["date"] <= end:
                 prev = _nearest(own_previews, e["date"])
                 label = TIMINGS[e["timing"]] + (" (usual time)" if e.get("timing_inferred") else "")
-                events.append({**e, "ticker": t, "name": c["name"], "timing_label": label,
+                events.append({**e, "ticker": t, "label": c["label"], "name": c["name"], "timing_label": label,
                                "has_preview": bool(prev), "preview_updated": prev["updated_at"] if prev else None})
 
     order = {"bmo": 0, "dmh": 1, "amc": 2, "unknown": 3}
