@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Macro Sensitivity</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0c10;
+    --surface: #111318;
+    --border: #1e2330;
+    --accent: #c8a96e;
+    --accent2: #5b8dd9;
+    --accent3: #a78bfa;
+    --text: #e8e4dc;
+    --muted: #6b7280;
+    --green: #4ade80;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; min-height: 100vh; padding: 40px 16px; }
+
+  .nav { display: flex; justify-content: center; gap: 24px; margin-bottom: 28px; font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; flex-wrap: wrap; }
+  .nav a { color: var(--muted); text-decoration: none; padding-bottom: 4px; border-bottom: 1px solid transparent; }
+  .nav a:hover { color: var(--text); }
+  .nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  header { text-align: center; margin-bottom: 36px; }
+  header h1 { font-family: 'Playfair Display', serif; font-size: 2.8rem; color: var(--accent); letter-spacing: -0.5px; }
+  header p { color: var(--muted); font-size: 0.75rem; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
+
+  main { max-width: 1000px; margin: 0 auto; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 22px; margin-bottom: 20px; }
+  .card-title { font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  label { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 6px; }
+  input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); font-family: 'DM Mono', monospace; font-size: 0.85rem; padding: 8px 10px; border-radius: 4px; outline: none; transition: border-color 0.2s; }
+  input:focus, select:focus { border-color: var(--accent); }
+  input::placeholder { color: #3a4050; }
+
+  /* Holdings: 12 rows laid out in two columns */
+  .holdings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+  @media (max-width: 720px) { .holdings { grid-template-columns: 1fr; } }
+  .hrow { display: grid; grid-template-columns: 22px 1fr 92px 82px; gap: 6px; align-items: center; }
+  .hrow .n { color: #3a4050; font-size: 0.65rem; text-align: right; }
+  .hrow input.tk { text-transform: uppercase; width: 100%; }
+  .hrow input.wt { width: 100%; text-align: right; }
+  .hrow select { width: 100%; padding: 8px 6px; }
+  .hrow select.short { color: var(--accent2); }
+  .hhead { display: grid; grid-template-columns: 22px 1fr 92px 82px; gap: 6px; }
+  .hhead label { margin-bottom: 0; }
+  .settings { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .settings input { width: 150px; }
+  .book-line { font-size: 0.7rem; color: var(--muted); margin-left: auto; text-align: right; line-height: 1.6; }
+  .book-line b { color: var(--text); font-weight: 500; }
+
+  .btn-row { display: flex; gap: 12px; justify-content: center; margin: 4px 0 28px; flex-wrap: wrap; }
+  button { border: none; font-family: 'DM Mono', monospace; font-size: 0.75rem; font-weight: 500; letter-spacing: 2px; text-transform: uppercase; padding: 11px 26px; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #analyzeBtn { background: var(--accent); color: #0a0c10; }
+  #exportBtn { background: var(--surface); color: var(--green); border: 1px solid var(--green); display: none; }
+  #copyLinkBtn { background: var(--surface); color: var(--accent2); border: 1px solid var(--accent2); display: none; }
+  #clearBtn { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  #shareLink { display: none; width: 100%; max-width: 600px; margin: -16px auto 24px; font-size: 0.75rem; color: var(--accent2); }
+
+  .error { text-align: center; color: var(--red); font-size: 0.75rem; margin-bottom: 24px; letter-spacing: 1px; }
+  .loading { text-align: center; color: var(--muted); font-size: 0.75rem; letter-spacing: 2px; padding: 40px; }
+  #results { display: none; }
+
+  .headline { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 20px; }
+  @media (max-width: 720px) { .headline { grid-template-columns: 1fr; } }
+  .hl { background: var(--surface); padding: 18px 16px; text-align: center; }
+  .hl .k { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .hl .v { font-family: 'Playfair Display', serif; font-size: 1.7rem; color: var(--accent); }
+  .hl .s { font-size: 0.65rem; color: var(--muted); margin-top: 6px; line-height: 1.6; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+  th { color: var(--muted); font-weight: 400; font-size: 0.58rem; letter-spacing: 1.5px; text-transform: uppercase; padding: 6px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  th.group { text-align: center; color: var(--accent); }
+  td { padding: 7px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th.l, td.l { text-align: left; }
+  tr:last-child td { border-bottom: none; }
+  .dim { color: var(--muted); }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .note { font-size: 0.62rem; color: var(--muted); line-height: 1.7; margin-top: 12px; }
+
+  .scenario { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+  .scenario input { width: 110px; }
+  .scen-out { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .scen-out .hl .v { font-size: 1.4rem; }
+
+  .chart-box { position: relative; height: 260px; }
+  .disclaimer { text-align: center; color: var(--muted); font-size: 0.6rem; letter-spacing: 1px; margin-top: 40px; max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.6; }
+  .signout { display: block; margin-top: 10px; color: var(--muted); }
+  .signout:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/">Pair Analysis</a>
+  <a href="/hedge">Hedge Finder</a>
+  <a href="/macro" class="active">Macro Sensitivity</a>
+  <a href="/calendar">Earnings Calendar</a>
+</nav>
+
+<header>
+  <h1>Macro Sensitivity</h1>
+  <p>How a book moves with rates, crude and diesel</p>
+</header>
+
+<main>
+  <div class="card">
+    <div class="card-title"><span>Book — up to 12 names</span><span style="letter-spacing:0;text-transform:none">Weights in % of NAV, or leave all blank for equal weight</span></div>
+    <div class="holdings">
+      <div class="hhead"><span></span><label>Ticker</label><label>Side</label><label style="text-align:right">Weight %</label></div>
+      <div class="hhead hide-narrow"><span></span><label>Ticker</label><label>Side</label><label style="text-align:right">Weight %</label></div>
+    </div>
+    <div class="holdings" id="holdings"></div>
+    <div class="settings">
+      <div><label>NAV ($, optional)</label><input id="nav" type="text" inputmode="decimal" placeholder="e.g. 5,470,000"></div>
+      <div><label>Lookback</label>
+        <select id="lookback"><option value="6mo">6 Months</option><option value="1y" selected>1 Year</option><option value="2y">2 Years</option></select></div>
+      <div><label>Returns</label>
+        <select id="frequency"><option value="daily" selected>Daily</option><option value="weekly">Weekly</option></select></div>
+      <div class="book-line" id="bookLine"></div>
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button id="analyzeBtn" onclick="analyze()">Analyze</button>
+    <button id="exportBtn" onclick="exportExcel()">↓ Export to Excel</button>
+    <button id="copyLinkBtn" onclick="copyLink()">Copy Link</button>
+    <button id="clearBtn" onclick="clearForm()">Clear</button>
+  </div>
+  <input id="shareLink" type="text" readonly onclick="this.select()" title="Copy this link" />
+
+  <div id="errorMsg" class="error" style="display:none;"></div>
+  <div id="loadingMsg" class="loading" style="display:none;">Fetching prices and running regressions…</div>
+
+  <div id="results">
+    <div class="headline" id="headline"></div>
+
+    <div class="card">
+      <div class="card-title">Regression Results — Long, Short and Net Book</div>
+      <div class="table-wrap"><table id="statsTable"></table></div>
+      <div class="note" id="statsNote"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Scenario — Estimated P&amp;L</div>
+      <div class="scenario">
+        <div><label>10Y yield move (bp)</label><input id="scRates" type="number" step="5" value="50"></div>
+        <div><label>Oil series</label><select id="scOil"><option value="crude">WTI crude</option><option value="diesel">ULSD diesel</option></select></div>
+        <div><label>Oil move (%)</label><input id="scOilMove" type="number" step="1" value="-10"></div>
+      </div>
+      <div class="scen-out" id="scenOut"></div>
+      <div class="note" id="scenNote"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span>Rolling Correlation of the Net Book (<span id="rollWin"></span>-Period Window)</span></div>
+      <div class="chart-box"><canvas id="rollChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span>Net Book Cumulative P&amp;L vs</span>
+        <select id="levelSeries" onchange="drawLevels()"></select></div>
+      <div class="chart-box"><canvas id="levelChart"></canvas></div>
+      <div class="note">Left axis: cumulative P&amp;L of today's book over the period, % of NAV. Right axis: the macro series' price or yield.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span>Which Positions Drive It</span>
+        <select id="posSeries" onchange="drawPositions()"></select></div>
+      <div class="table-wrap"><table id="posTable"></table></div>
+      <div class="note">Contribution = position weight × that stock's sensitivity. Contributions add up to the net book's figure.</div>
+    </div>
+  </div>
+</main>
+
+<p class="disclaimer">Prices from Yahoo Finance. Crude and diesel are front-month NYMEX futures (CL=F, HO=F), adjusted for contract rolls.
+Regressions describe the past period and are estimates, not forecasts. Not investment advice.<!--SIGN_OUT--></p>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const ROWS = 12;
+const COLORS = { rates: "#4ade80", crude: "#c8a96e", diesel: "#a78bfa" };
+let data = null, lastQuery = null, charts = {};
+
+// ── Form ────────────────────────────────────────────────────────────────────
+(function buildRows() {
+  $("holdings").innerHTML = Array.from({ length: ROWS }, (_, i) => `
+    <div class="hrow">
+      <span class="n">${i + 1}</span>
+      <input class="tk" id="tk${i}" type="text" maxlength="15" placeholder="${i === 0 ? "e.g. AOS" : ""}" autocomplete="off">
+      <select id="sd${i}"><option value="L">Long</option><option value="S">Short</option></select>
+      <input class="wt" id="wt${i}" type="text" inputmode="decimal" placeholder="—">
+    </div>`).join("");
+  for (let i = 0; i < ROWS; i++) {
+    ["tk", "sd", "wt"].forEach(p => $(p + i).addEventListener("input", updateBookLine));
+    $("sd" + i).addEventListener("change", e => e.target.classList.toggle("short", e.target.value === "S"));
+    [$("tk" + i), $("wt" + i)].forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter") analyze(); }));
+  }
+  if (innerWidth <= 720) document.querySelector(".hide-narrow").style.display = "none";
+})();
+
+function rows() {
+  const out = [];
+  for (let i = 0; i < ROWS; i++) {
+    const t = $("tk" + i).value.trim().toUpperCase();
+    if (t) out.push({ t, s: $("sd" + i).value, w: $("wt" + i).value.replace("%", "").trim() });
+  }
+  return out;
+}
+
+function updateBookLine() {
+  const r = rows();
+  if (!r.length) { $("bookLine").textContent = ""; return; }
+  const weighted = r.every(x => x.w !== "");
+  if (!weighted) { $("bookLine").innerHTML = `<b>${r.length}</b> names · equal weight`; return; }
+  let L = 0, S = 0;
+  r.forEach(x => { const w = parseFloat(x.w) || 0; x.s === "L" ? L += w : S += w; });
+  $("bookLine").innerHTML = `Long <b>${L.toFixed(1)}%</b> · Short <b>${S.toFixed(1)}%</b><br>Net <b>${(L - S).toFixed(1)}%</b> · Gross <b>${(L + S).toFixed(1)}%</b>`;
+}
+
+function currentQuery() {
+  const q = new URLSearchParams({
+    h: rows().map(x => `${x.t}:${x.s}${x.w ? ":" + x.w : ""}`).join(","),
+    lookback: $("lookback").value, frequency: $("frequency").value,
+  });
+  const nav = $("nav").value.replace(/[$,\s]/g, "");
+  if (nav) q.set("nav", nav);
+  return q;
+}
+
+function clearForm() {
+  for (let i = 0; i < ROWS; i++) { $("tk" + i).value = ""; $("wt" + i).value = ""; $("sd" + i).value = "L"; $("sd" + i).classList.remove("short"); }
+  $("nav").value = "";
+  updateBookLine();
+  $("results").style.display = "none";
+  ["exportBtn", "copyLinkBtn", "shareLink"].forEach(id => $(id).style.display = "none");
+  history.replaceState(null, "", "/macro");
+}
+
+// ── Formatting ──────────────────────────────────────────────────────────────
+const pct = (x, d = 2) => (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(d) + "%";
+const money = x => {
+  const a = Math.abs(x), s = x >= 0 ? "+" : "−";
+  return a >= 1e6 ? `${s}$${(a / 1e6).toFixed(2)}M` : a >= 1e3 ? `${s}$${(a / 1e3).toFixed(0)}K` : `${s}$${a.toFixed(0)}`;
+};
+const cls = x => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const sig = t => Math.abs(t) >= 1.96 ? "" : " dim";
+const sigTitle = t => Math.abs(t) >= 1.96 ? "" : ' title="Not statistically significant (|t| < 1.96)"';
+const bookName = b => ({ long: "Long book", short: "Short book", net: "Net book" })[b];
+
+// ── Run ─────────────────────────────────────────────────────────────────────
+async function analyze() {
+  const errEl = $("errorMsg"), loadEl = $("loadingMsg"), btn = $("analyzeBtn");
+  errEl.style.display = "none";
+  if (!rows().length) { errEl.textContent = "Enter at least one ticker."; errEl.style.display = "block"; return; }
+  const query = currentQuery();
+  $("results").style.display = "none";
+  ["exportBtn", "copyLinkBtn", "shareLink"].forEach(id => $(id).style.display = "none");
+  btn.disabled = true;
+  loadEl.style.display = "block";
+  try {
+    const res = await fetch(`/api/macro?${query}`);
+    if (res.status === 401) { location.href = "/login?next=" + encodeURIComponent("/macro?" + query); return; }
+    const d = await res.json();
+    if (!res.ok || d.error) throw new Error(d.error || "Unknown server error.");
+    data = d;
+    lastQuery = query;
+    history.replaceState(null, "", "/macro?" + query);
+    loadEl.style.display = "none";
+    $("results").style.display = "block";
+    render();
+    $("exportBtn").style.display = "inline-block";
+    $("copyLinkBtn").style.display = "inline-block";
+  } catch (e) {
+    loadEl.style.display = "none";
+    errEl.textContent = e.message || "Something went wrong. Is the server running?";
+    errEl.style.display = "block";
+  }
+  btn.disabled = false;
+}
+
+function render() {
+  const d = data, defs = d.series_defs, nav = d.nav;
+  const net = d.stats.find(s => s.book === "net");
+
+  // Headline: one card per series, net book, market-adjusted impact first.
+  $("headline").innerHTML = defs.map(s => {
+    const v = net.series[s.key];
+    return `<div class="hl"><div class="k">${esc(s.label)} ${s.shock}</div>
+      <div class="v ${sig(v.t_ex_mkt)}"${sigTitle(v.t_ex_mkt)}>${pct(v.impact_ex_mkt)}${nav ? ` <span style="font-size:0.9rem">${money(v.impact_ex_mkt * nav)}</span>` : ""}</div>
+      <div class="s">Net book, market-adjusted (t ${v.t_ex_mkt.toFixed(1)})<br>
+        Raw ${pct(v.impact)} · correlation ${v.corr.toFixed(2)}</div></div>`;
+  }).join("");
+
+  // Full table.
+  const money2 = (x) => nav ? `<td class="${cls(x)}">${money(x * nav)}</td>` : "";
+  $("statsTable").innerHTML = `
+    <thead><tr><th class="l"></th>${defs.map(s => `<th class="group" colspan="${nav ? 6 : 5}">${esc(s.label)} · per ${s.shock}</th>`).join("")}</tr>
+    <tr><th class="l">Book</th>${defs.map(() => `<th>Corr</th><th>Impact</th><th>t</th><th>Ex-Mkt</th><th>t</th>${nav ? "<th>Ex-Mkt $</th>" : ""}`).join("")}</tr></thead>
+    <tbody>${d.stats.map(b => `<tr><td class="l">${bookName(b.book)}</td>${defs.map(s => {
+      const v = b.series[s.key];
+      return `<td>${v.corr.toFixed(2)}</td><td class="${cls(v.impact)}${sig(v.t)}">${pct(v.impact)}</td><td class="dim">${v.t.toFixed(1)}</td>
+              <td class="${cls(v.impact_ex_mkt)}${sig(v.t_ex_mkt)}"${sigTitle(v.t_ex_mkt)}>${pct(v.impact_ex_mkt)}</td><td class="dim">${v.t_ex_mkt.toFixed(1)}</td>${money2(v.impact_ex_mkt)}`;
+    }).join("")}</tr>`).join("")}</tbody>`;
+
+  const mv = d.series_moves;
+  $("statsNote").innerHTML =
+    `Impact = estimated change in the book, as % of NAV, for the move shown. "Ex-Mkt" is fitted alongside SPY, so it ` +
+    `strips out the part that's really equity-market exposure; it's usually the better read. Greyed figures are not ` +
+    `statistically significant. ${d.frequency === "daily" ? "Daily" : "Weekly"} returns, ${d.start} to ${d.end} (${d.n_obs} periods). ` +
+    `Over the period: 10Y ${mv.rates.start.toFixed(2)}% → ${mv.rates.end.toFixed(2)}%, WTI $${mv.crude.start.toFixed(2)} → $${mv.crude.end.toFixed(2)}, ` +
+    `ULSD $${mv.diesel.start.toFixed(3)} → $${mv.diesel.end.toFixed(3)}/gal. ` +
+    `${d.roll_days_removed.crude} crude and ${d.roll_days_removed.diesel} diesel contract-roll days were neutralized. ` +
+    (d.frequency === "daily" ? "Futures settle at 2:30pm ET, before stocks close, so daily figures understate oil links somewhat; weekly returns avoid this." : "");
+
+  drawScenario();
+  drawRolling();
+  const opts = defs.map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join("");
+  $("levelSeries").innerHTML = opts;
+  $("posSeries").innerHTML = opts;
+  drawLevels();
+  drawPositions();
+}
+
+function drawScenario() {
+  if (!data) return;
+  const oil = $("scOil").value, bp = parseFloat($("scRates").value) || 0, move = parseFloat($("scOilMove").value) || 0;
+  const model = data.scenario[oil];
+  const books = data.stats.map(s => s.book);
+  $("scenOut").innerHTML = books.map(b => {
+    const m = model[b];
+    const pnl = m.per_100bp * bp / 100 + m.per_10pct * move / 10;
+    return `<div class="hl"><div class="k">${bookName(b)}</div><div class="v ${cls(pnl)}">${pct(pnl)}</div>
+      <div class="s">${data.nav ? money(pnl * data.nav) + " · " : ""}rates ${pct(m.per_100bp * bp / 100)}, oil ${pct(m.per_10pct * move / 10)}</div></div>`;
+  }).join("");
+  const n = model.net;
+  $("scenNote").textContent =
+    `Uses a regression of each book on the 10Y yield and ${oil === "crude" ? "WTI" : "diesel"} together (crude and diesel move too closely ` +
+    `to fit at once). It assumes the stock market otherwise behaves as it did when these moves happened in the past. ` +
+    `Net book fit: R² ${n.r2.toFixed(2)}, t-stats rates ${n.t_rates.toFixed(1)}, oil ${n.t_oil.toFixed(1)}.`;
+}
+["scRates", "scOil", "scOilMove"].forEach(id => $(id).addEventListener("input", drawScenario));
+
+const gc = "#1e2330";
+const tick = { color: "#6b7280", font: { size: 9 } };
+const legend = { labels: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, boxWidth: 10 } };
+const shortDates = () => data.chart.dates.map(s => new Date(s + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" }));
+
+function drawRolling() {
+  charts.roll && charts.roll.destroy();
+  const ch = data.chart;
+  $("rollWin").textContent = ch.rolling_window;
+  const labels = shortDates().slice(1);
+  charts.roll = new Chart($("rollChart"), {
+    type: "line",
+    data: { labels, datasets: [
+      ...data.series_defs.map(s => ({ label: s.label, data: ch.rolling_corr[s.key], borderColor: COLORS[s.key], borderWidth: 1.5, pointRadius: 0, tension: 0.1 })),
+      { label: "zero", data: labels.map(() => 0), borderColor: "#2a3040", borderWidth: 1, pointRadius: 0, borderDash: [4, 3] },
+    ] },
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { ...legend, labels: { ...legend.labels, filter: i => i.text !== "zero" } } },
+      scales: { x: { ticks: { ...tick, maxTicksLimit: 8 }, grid: { color: gc } }, y: { min: -1, max: 1, ticks: tick, grid: { color: gc } } } },
+  });
+}
+
+function drawLevels() {
+  charts.level && charts.level.destroy();
+  const key = $("levelSeries").value, s = data.series_defs.find(x => x.key === key), ch = data.chart;
+  const fmtLevel = v => key === "rates" ? v.toFixed(2) + "%" : "$" + v.toFixed(key === "diesel" ? 2 : 0);
+  charts.level = new Chart($("levelChart"), {
+    type: "line",
+    data: { labels: shortDates(), datasets: [
+      { label: "Net book cumulative P&L", data: ch.net_cum.map(v => v * 100), borderColor: "#e8e4dc", borderWidth: 1.5, pointRadius: 0, tension: 0.1, yAxisID: "y" },
+      { label: s.label, data: ch.levels[key], borderColor: COLORS[key], borderWidth: 1.2, pointRadius: 0, tension: 0.1, borderDash: [3, 2], yAxisID: "y2" },
+    ] },
+    options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend },
+      scales: {
+        x: { ticks: { ...tick, maxTicksLimit: 8 }, grid: { color: gc } },
+        y: { ticks: { ...tick, callback: v => v.toFixed(0) + "%" }, grid: { color: gc } },
+        y2: { position: "right", grid: { display: false }, ticks: { ...tick, color: COLORS[key], callback: fmtLevel } },
+      } },
+  });
+}
+
+function drawPositions() {
+  const key = $("posSeries").value, s = data.series_defs.find(x => x.key === key), nav = data.nav;
+  const rowsSorted = [...data.positions].sort((a, b) => Math.abs(b.series[key].impact_ex_mkt) - Math.abs(a.series[key].impact_ex_mkt));
+  const net = data.stats.find(b => b.book === "net").series[key];
+  $("posTable").innerHTML = `
+    <thead><tr><th class="l">Ticker</th><th>Weight</th><th>Corr</th><th>Stock ${s.shock}</th><th>Stock ex-Mkt</th><th>t</th>
+      <th>Contribution</th><th>Contribution ex-Mkt</th>${nav ? "<th>Ex-Mkt $</th>" : ""}</tr></thead>
+    <tbody>${rowsSorted.map(p => { const v = p.series[key]; return `<tr>
+      <td class="l" style="color:${p.weight < 0 ? "var(--accent2)" : "var(--text)"}">${esc(p.ticker)}${p.weight < 0 ? " (short)" : ""}</td>
+      <td>${pct(p.weight, 1)}</td><td>${v.corr.toFixed(2)}</td>
+      <td class="${sig(v.t)}">${pct(v.beta_impact)}</td><td class="${sig(v.t_ex_mkt)}"${sigTitle(v.t_ex_mkt)}>${pct(v.beta_impact_ex_mkt)}</td><td class="dim">${v.t_ex_mkt.toFixed(1)}</td>
+      <td class="${cls(v.impact)}">${pct(v.impact, 3)}</td><td class="${cls(v.impact_ex_mkt)}">${pct(v.impact_ex_mkt, 3)}</td>
+      ${nav ? `<td class="${cls(v.impact_ex_mkt)}">${money(v.impact_ex_mkt * nav)}</td>` : ""}</tr>`; }).join("")}
+    <tr><td class="l" style="color:var(--accent)">Net book</td><td colspan="5"></td>
+      <td class="${cls(net.impact)}">${pct(net.impact, 3)}</td><td class="${cls(net.impact_ex_mkt)}">${pct(net.impact_ex_mkt, 3)}</td>
+      ${nav ? `<td class="${cls(net.impact_ex_mkt)}">${money(net.impact_ex_mkt * nav)}</td>` : ""}</tr></tbody>`;
+}
+
+function exportExcel() { if (lastQuery) location.href = `/api/macro/export?${lastQuery}`; }
+
+async function copyLink() {
+  try {
+    await navigator.clipboard.writeText(location.href);
+    $("copyLinkBtn").textContent = "Copied!";
+    setTimeout(() => { $("copyLinkBtn").textContent = "Copy Link"; }, 2000);
+  } catch {
+    $("shareLink").value = location.href;
+    $("shareLink").style.display = "block";
+    $("shareLink").select();
+  }
+}
+
+// A shared link (/macro?h=AOS:L:17,XLY:S:2&…) fills the form and runs it.
+(function loadFromUrl() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("h")) return;
+  q.get("h").split(",").slice(0, ROWS).forEach((part, i) => {
+    const [t, s, w] = part.split(":");
+    $("tk" + i).value = t || "";
+    $("sd" + i).value = s === "S" ? "S" : "L";
+    $("sd" + i).classList.toggle("short", s === "S");
+    $("wt" + i).value = w || "";
+  });
+  if (q.get("nav")) $("nav").value = Number(q.get("nav")).toLocaleString("en-US");
+  const setIf = (id, v) => { if (v && [...$(id).options].some(o => o.value === v)) $(id).value = v; };
+  setIf("lookback", q.get("lookback"));
+  setIf("frequency", q.get("frequency"));
+  updateBookLine();
+  analyze();
+})();
+</script>
+</body>
+</html>

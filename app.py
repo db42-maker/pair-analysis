@@ -15,6 +15,7 @@ from yfinance.exceptions import YFRateLimitError
 from statsmodels.tsa.stattools import coint
 import hedge
 import earnings
+import macro
 
 # static_folder=None so the server never hands out its own source files.
 app = Flask(__name__, static_folder=None)
@@ -81,7 +82,7 @@ def require_login():
         return None
     # Pages fetch /api/* in the background, so answer those with JSON. The Excel export is a normal
     # navigation, so it goes through the sign-in page like any other link.
-    if request.path.startswith("/api/") and request.path != "/api/export":
+    if request.path.startswith("/api/") and request.path not in ("/api/export", "/api/macro/export"):
         return jsonify({"error": "Your sign-in has expired. Please reload the page and sign in again."}), 401
     return redirect("/login?next=" + quote(_safe_next(request.full_path.rstrip("?")), safe=""))
 
@@ -870,6 +871,49 @@ def hedge_api():
         return jsonify({"error": f"Hedge search failed: {str(e)}"}), 500
 
 
+# ── Portfolio macro sensitivity ─────────────────────────────────────────────
+def run_macro():
+    """Shared by /api/macro and /api/macro/export."""
+    holdings = macro.parse_holdings(request.args.get("h", ""))
+    nav = request.args.get("nav", "").replace(",", "").replace("$", "").strip()
+    try:
+        nav = float(nav) if nav else None
+    except ValueError:
+        raise ValueError("NAV should be a dollar amount, e.g. 5000000.")
+    if nav is not None and nav <= 0:
+        raise ValueError("NAV should be a positive dollar amount.")
+    prefetch(["SPY"] + [s for _, _, s, _, _ in macro.SERIES] + [t for t, _ in holdings])
+    return macro.analyze(holdings, fetch_daily_prices, lookback=request.args.get("lookback", "1y"),
+                         frequency=request.args.get("frequency", "daily"), nav=nav)
+
+
+@app.route("/api/macro")
+def macro_api():
+    try:
+        return jsonify(run_macro())
+    except DataSourceError as e:
+        return jsonify({"error": str(e)}), 503
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
+
+@app.route("/api/macro/export")
+def macro_export():
+    try:
+        result = run_macro()
+        return send_file(macro.build_workbook(result),
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name=f"macro_sensitivity_{result['end']}.xlsx")
+    except DataSourceError as e:
+        return jsonify({"error": str(e)}), 503
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Export failed: {str(e)}"}), 500
+
+
 # ── Earnings calendar ───────────────────────────────────────────────────────
 def _iso_date(raw, what="date"):
     try:
@@ -961,6 +1005,11 @@ def hedge_page():
 @app.route("/calendar")
 def calendar_page():
     return _serve_page("calendar.html")
+
+
+@app.route("/macro")
+def macro_page():
+    return _serve_page("macro.html")
 
 
 if __name__ == "__main__":
