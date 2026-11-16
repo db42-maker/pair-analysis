@@ -23,6 +23,10 @@ PERIODS_PER_YEAR = {"daily": 252, "weekly": 52}
 ROLLING_WINDOW = {"daily": 60, "weekly": 26}
 MIN_OBS = {"daily": 60, "weekly": 20}
 
+# Comparison points, shown as if 100% of NAV were invested. ETFs rather than the indexes so dividends
+# are included, as they are in the stocks' adjusted prices.
+BENCHMARKS = [("spy", "S&P 500 (SPY)", "SPY"), ("iwm", "Russell 2000 (IWM)", "IWM")]
+
 # key, label, Yahoo symbol, roll rule, shock unit used for sensitivities
 SERIES = [
     ("rates",  "10-Year Treasury Yield", "^TNX", None, "bp"),
@@ -195,7 +199,9 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
         raise ValueError(" ".join(problems))
 
     # Keep only dates where every series has a value, then sample weekly if asked.
-    all_series = {"SPY": aligned(spy_dates, spy_prices), **holding_levels, **{f"_{k}": v for k, v in levels.items()}}
+    bench_levels = {sym: aligned(*fetch_prices(sym)) for _, _, sym in BENCHMARKS if sym != "SPY"}
+    all_series = {"SPY": aligned(spy_dates, spy_prices), **bench_levels, **holding_levels,
+                  **{f"_{k}": v for k, v in levels.items()}}
     keep = [i for i in range(len(base)) if all(s[i] is not None for s in all_series.values())]
     if frequency == "weekly":
         weeks = {}
@@ -225,21 +231,31 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
     books["net"] = books["long"] + books["short"]
     has_short, has_long = any(v < 0 for v in w.values()), any(v > 0 for v in w.values())
 
-    def sensitivity(y, key, unit):
+    bench = {key: rets(all_series[sym]) for key, _, sym in BENCHMARKS}
+
+    def sensitivity(y, key, unit, ex_mkt=True):
         (b,), (t,), r2 = _ols(y, X[key][:, None])
-        (_, b_x), (_, t_x), _ = _ols(y, np.column_stack([spy, X[key]]))
         k = _shock(unit)
-        return {"corr": round(_corr(y, X[key]), 4), "r2": round(r2, 4),
-                "impact": round(b * k, 6), "t": round(float(t), 2),               # fraction of NAV per shock
-                "impact_ex_mkt": round(b_x * k, 6), "t_ex_mkt": round(float(t_x), 2)}
+        out = {"corr": round(_corr(y, X[key]), 4), "r2": round(r2, 4),
+               "impact": round(float(b * k), 6), "t": round(float(t), 2),        # fraction of NAV per shock
+               "impact_ex_mkt": None, "t_ex_mkt": None}
+        if ex_mkt:  # meaningless for SPY itself: removing the market from the market leaves nothing
+            (_, b_x), (_, t_x), _ = _ols(y, np.column_stack([spy, X[key]]))
+            out.update(impact_ex_mkt=round(float(b_x * k), 6), t_ex_mkt=round(float(t_x), 2))
+        return out
 
     stats = []
     for book in ("long", "short", "net"):
         if (book == "short" and not has_short) or (book == "long" and not has_long):
             continue
         y = books[book]
-        stats.append({"book": book, "spy_corr": round(_corr(y, spy), 4),
+        stats.append({"book": book, "label": f"{book.title()} book", "benchmark": False,
+                      "spy_corr": round(_corr(y, spy), 4),
                       "series": {key: sensitivity(y, key, unit) for key, _, _, _, unit in SERIES}})
+    for key, label, _ in BENCHMARKS:
+        y = bench[key]
+        stats.append({"book": key, "label": label, "benchmark": True, "spy_corr": round(_corr(y, spy), 4),
+                      "series": {s: sensitivity(y, s, unit, ex_mkt=key != "spy") for s, _, _, _, unit in SERIES}})
 
     # Each position's share of the book's sensitivity (they add up exactly: same sample, same regressors).
     positions = []
@@ -257,8 +273,8 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
     scenario = {}
     for oil in ("crude", "diesel"):
         scenario[oil] = {}
-        for book in ("long", "short", "net"):
-            (b_r, b_o), (t_r, t_o), r2 = _ols(books[book], np.column_stack([X["rates"], X[oil]]))
+        for book, y in {**books, **bench}.items():
+            (b_r, b_o), (t_r, t_o), r2 = _ols(y, np.column_stack([X["rates"], X[oil]]))
             scenario[oil][book] = {"per_100bp": round(b_r, 6), "per_10pct": round(b_o * 0.10, 6),
                                    "t_rates": round(float(t_r), 2), "t_oil": round(float(t_o), 2), "r2": round(r2, 4)}
 
@@ -284,7 +300,10 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
             "levels": {k: [round(raw_levels[k][i], 3) for i in keep] for k, *_ in SERIES},
             "rolling_window": window,
             "rolling_corr": {k: _rolling_corr(books["net"], X[k], window) for k, *_ in SERIES},
+            "rolling_corr_bench": {b: {k: _rolling_corr(bench[b], X[k], window) for k, *_ in SERIES}
+                                   for b, *_ in BENCHMARKS},
         },
+        "benchmark_defs": [{"key": k, "label": l, "symbol": s} for k, l, s in BENCHMARKS],
     }
 
 
@@ -341,8 +360,10 @@ def build_workbook(result):
         rows = []
         for s in result["stats"]:
             v = s["series"][d["key"]]
-            rows.append((s["book"].title(), v["corr"], v["r2"], v["impact"], v["t"], v["impact_ex_mkt"], v["t_ex_mkt"],
-                         v["impact"] * nav if nav else None, v["impact_ex_mkt"] * nav if nav else None))
+            ex = v["impact_ex_mkt"]
+            rows.append((s["label"] + (" — as 100% of NAV" if s["benchmark"] else ""), v["corr"], v["r2"], v["impact"], v["t"],
+                         ex if ex is not None else "n/a", v["t_ex_mkt"] if ex is not None else "n/a",
+                         v["impact"] * nav if nav else None, ex * nav if nav and ex is not None else None))
         ws.cell(row=nxt, column=1, value=f"{d['label'].upper()} ({d['symbol']}), per {d['shock']}").font = gold_font
         nxt = table(ws, nxt + 1, ["Book", "Corr", "R²", "Impact", "t-stat", "Impact ex-Mkt", "t-stat", "Impact $", "Impact ex-Mkt $"],
                     rows, ["text", NUM, NUM, PCT2, NUM, PCT2, NUM, "#,##0", "#,##0"])
@@ -359,7 +380,14 @@ def build_workbook(result):
             v = p["series"][d["key"]]
             row += [v["corr"], v["impact"], v["impact_ex_mkt"]]
         rows.append(row)
-    table(ws, 1, headers, rows, ["text", PCT] + [NUM, PCT2, PCT2] * len(defs), [10, 10] + [16, 14, 14] * len(defs))
+    for s in result["stats"]:
+        if s["benchmark"]:  # comparison rows: the benchmark held at 100% of NAV
+            row = [s["label"], 1.0]
+            for d in defs:
+                v = s["series"][d["key"]]
+                row += [v["corr"], v["impact"], v["impact_ex_mkt"] if v["impact_ex_mkt"] is not None else "n/a"]
+            rows.append(row)
+    table(ws, 1, headers, rows, ["text", PCT] + [NUM, PCT2, PCT2] * len(defs), [22, 10] + [16, 14, 14] * len(defs))
 
     ws = wb.create_sheet("Data")
     ws.sheet_view.showGridLines = False

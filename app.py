@@ -882,7 +882,8 @@ def run_macro():
         raise ValueError("NAV should be a dollar amount, e.g. 5000000.")
     if nav is not None and nav <= 0:
         raise ValueError("NAV should be a positive dollar amount.")
-    prefetch(["SPY"] + [s for _, _, s, _, _ in macro.SERIES] + [t for t, _ in holdings])
+    prefetch(["SPY"] + [s for _, _, s in macro.BENCHMARKS] + [s for _, _, s, _, _ in macro.SERIES]
+             + [t for t, _ in holdings])
     return macro.analyze(holdings, fetch_daily_prices, lookback=request.args.get("lookback", "1y"),
                          frequency=request.args.get("frequency", "daily"), nav=nav)
 

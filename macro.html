@@ -94,6 +94,12 @@
   .scen-out .hl .v { font-size: 1.4rem; }
 
   .chart-box { position: relative; height: 260px; }
+  table.heat td.cell { text-align: center; min-width: 120px; font-variant-numeric: tabular-nums; }
+  table.heat th { text-align: center; }
+  table.heat th.l { text-align: left; }
+  tr.sep td { border-top: 1px solid var(--muted); }
+  .tag { font-size: 0.55rem; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-left: 6px; }
+  .scen-out { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important; }
   .disclaimer { text-align: center; color: var(--muted); font-size: 0.6rem; letter-spacing: 1px; margin-top: 40px; max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.6; }
   .signout { display: block; margin-top: 10px; color: var(--muted); }
   .signout:hover { color: var(--accent); }
@@ -146,6 +152,17 @@
     <div class="headline" id="headline"></div>
 
     <div class="card">
+      <div class="card-title"><span>Comparison — Your Stocks, the Book and the Benchmarks</span>
+        <select id="cmpMode" onchange="drawComparison()">
+          <option value="corr">Correlation</option>
+          <option value="impact">Sensitivity</option>
+          <option value="impact_ex_mkt">Sensitivity ex-market</option>
+        </select></div>
+      <div class="table-wrap"><table id="cmpTable" class="heat"></table></div>
+      <div class="note" id="cmpNote"></div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Regression Results — Long, Short and Net Book</div>
       <div class="table-wrap"><table id="statsTable"></table></div>
       <div class="note" id="statsNote"></div>
@@ -163,7 +180,8 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><span>Rolling Correlation of the Net Book (<span id="rollWin"></span>-Period Window)</span></div>
+      <div class="card-title"><span>Rolling Correlation (<span id="rollWin"></span>-Period Window)</span>
+        <select id="rollSeries" onchange="drawRolling()"></select></div>
       <div class="chart-box"><canvas id="rollChart"></canvas></div>
     </div>
 
@@ -257,7 +275,7 @@ const money = x => {
 const cls = x => x > 0 ? "pos" : x < 0 ? "neg" : "";
 const sig = t => Math.abs(t) >= 1.96 ? "" : " dim";
 const sigTitle = t => Math.abs(t) >= 1.96 ? "" : ' title="Not statistically significant (|t| < 1.96)"';
-const bookName = b => ({ long: "Long book", short: "Short book", net: "Net book" })[b];
+const bookLabel = b => data.stats.find(s => s.book === b).label;
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 async function analyze() {
@@ -308,10 +326,12 @@ function render() {
   $("statsTable").innerHTML = `
     <thead><tr><th class="l"></th>${defs.map(s => `<th class="group" colspan="${nav ? 6 : 5}">${esc(s.label)} · per ${s.shock}</th>`).join("")}</tr>
     <tr><th class="l">Book</th>${defs.map(() => `<th>Corr</th><th>Impact</th><th>t</th><th>Ex-Mkt</th><th>t</th>${nav ? "<th>Ex-Mkt $</th>" : ""}`).join("")}</tr></thead>
-    <tbody>${d.stats.map(b => `<tr><td class="l">${bookName(b.book)}</td>${defs.map(s => {
-      const v = b.series[s.key];
+    <tbody>${d.stats.map((b, i) => `<tr class="${b.benchmark && !d.stats[i - 1].benchmark ? "sep" : ""}">
+      <td class="l">${esc(b.label)}${b.benchmark ? '<span class="tag">100% NAV</span>' : ""}</td>${defs.map(s => {
+      const v = b.series[s.key], ex = v.impact_ex_mkt;
       return `<td>${v.corr.toFixed(2)}</td><td class="${cls(v.impact)}${sig(v.t)}">${pct(v.impact)}</td><td class="dim">${v.t.toFixed(1)}</td>
-              <td class="${cls(v.impact_ex_mkt)}${sig(v.t_ex_mkt)}"${sigTitle(v.t_ex_mkt)}>${pct(v.impact_ex_mkt)}</td><td class="dim">${v.t_ex_mkt.toFixed(1)}</td>${money2(v.impact_ex_mkt)}`;
+              ${ex === null ? '<td class="dim" title="Not meaningful: this is the market">—</td><td class="dim">—</td>' + (nav ? '<td class="dim">—</td>' : "")
+                : `<td class="${cls(ex)}${sig(v.t_ex_mkt)}"${sigTitle(v.t_ex_mkt)}>${pct(ex)}</td><td class="dim">${v.t_ex_mkt.toFixed(1)}</td>${money2(ex)}`}`;
     }).join("")}</tr>`).join("")}</tbody>`;
 
   const mv = d.series_moves;
@@ -324,9 +344,12 @@ function render() {
     `${d.roll_days_removed.crude} crude and ${d.roll_days_removed.diesel} diesel contract-roll days were neutralized. ` +
     (d.frequency === "daily" ? "Futures settle at 2:30pm ET, before stocks close, so daily figures understate oil links somewhat; weekly returns avoid this." : "");
 
+  drawComparison();
   drawScenario();
-  drawRolling();
   const opts = defs.map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join("");
+  $("rollSeries").innerHTML = `<option value="_all">Net book vs all three</option>` +
+    defs.map(s => `<option value="${s.key}">${esc(s.label)}: book vs benchmarks</option>`).join("");
+  drawRolling();
   $("levelSeries").innerHTML = opts;
   $("posSeries").innerHTML = opts;
   drawLevels();
@@ -341,7 +364,8 @@ function drawScenario() {
   $("scenOut").innerHTML = books.map(b => {
     const m = model[b];
     const pnl = m.per_100bp * bp / 100 + m.per_10pct * move / 10;
-    return `<div class="hl"><div class="k">${bookName(b)}</div><div class="v ${cls(pnl)}">${pct(pnl)}</div>
+    const st = data.stats.find(s => s.book === b);
+    return `<div class="hl"><div class="k">${esc(st.label)}${st.benchmark ? " · 100% NAV" : ""}</div><div class="v ${cls(pnl)}">${pct(pnl)}</div>
       <div class="s">${data.nav ? money(pnl * data.nav) + " · " : ""}rates ${pct(m.per_100bp * bp / 100)}, oil ${pct(m.per_10pct * move / 10)}</div></div>`;
   }).join("");
   const n = model.net;
@@ -357,15 +381,62 @@ const tick = { color: "#6b7280", font: { size: 9 } };
 const legend = { labels: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, boxWidth: 10 } };
 const shortDates = () => data.chart.dates.map(s => new Date(s + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" }));
 
+// Heat map: each stock, the net book and the two benchmarks against each macro series.
+function drawComparison() {
+  const d = data, mode = $("cmpMode").value, defs = d.series_defs;
+  const net = d.stats.find(s => s.book === "net");
+  const netExposure = d.summary.net;
+  const rows = [
+    ...d.positions.map(p => ({ label: p.ticker + (p.weight < 0 ? " (short)" : ""), kind: "stock",
+      v: k => mode === "corr" ? p.series[k].corr : p.series[k]["beta_" + mode], t: k => mode === "impact" ? p.series[k].t : p.series[k].t_ex_mkt })),
+    { label: "Net book", kind: "book", sep: true,
+      v: k => net.series[k][mode], t: k => mode === "impact" ? net.series[k].t : net.series[k].t_ex_mkt },
+  ];
+  if (mode !== "corr" && Math.abs(netExposure) > 0.01)
+    rows.push({ label: `Net book, scaled to 100% net`, kind: "book", tag: `actual ${pct(netExposure, 0)} net`,
+      v: k => net.series[k][mode] / netExposure, t: k => mode === "impact" ? net.series[k].t : net.series[k].t_ex_mkt });
+  d.stats.filter(s => s.benchmark).forEach((b, i) => rows.push({ label: b.label, kind: "bench", sep: i === 0, tag: mode === "corr" ? "" : "100% NAV",
+    v: k => b.series[k][mode], t: k => mode === "impact" ? b.series[k].t : b.series[k].t_ex_mkt }));
+
+  // Shade each column against its own largest value (correlations against 1).
+  const scale = {};
+  defs.forEach(s => scale[s.key] = mode === "corr" ? 1 : Math.max(1e-9, ...rows.map(r => Math.abs(r.v(s.key) ?? 0))));
+  const shade = (x, k) => {
+    if (x === null || x === undefined) return "";
+    const a = Math.min(1, Math.abs(x) / scale[k]) * 0.55;
+    return `background: rgba(${x < 0 ? "248,113,113" : "74,222,128"}, ${a.toFixed(3)})`;
+  };
+  const fmtV = x => x === null || x === undefined ? "—" : mode === "corr" ? x.toFixed(2) : pct(x);
+
+  $("cmpTable").innerHTML = `
+    <thead><tr><th class="l"></th>${defs.map(s => `<th>${esc(s.label)}${mode === "corr" ? "" : ` · ${s.shock}`}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r => `<tr class="${r.sep ? "sep" : ""}">
+      <td class="l" style="${r.kind === "stock" ? "" : "color:var(--accent)"}">${esc(r.label)}${r.tag ? `<span class="tag">${esc(r.tag)}</span>` : ""}</td>
+      ${defs.map(s => { const x = r.v(s.key), t = mode === "corr" ? 9 : r.t(s.key);
+        return `<td class="cell${t !== null && Math.abs(t) < 1.96 ? " dim" : ""}" style="${shade(x, s.key)}"${x === null ? ' title="Not meaningful: this is the market"' : ""}>${fmtV(x)}</td>`; }).join("")}
+    </tr>`).join("")}</tbody>`;
+
+  $("cmpNote").textContent = mode === "corr"
+    ? "Correlation of daily or weekly returns with yield changes and oil price changes. Read down a column to see which names move most with each factor, and how the book compares with the S&P 500 and Russell 2000."
+    : "Each stock and benchmark is shown as if it were 100% of NAV, so their sensitivities compare directly. The net book row is your actual book; " +
+      "the scaled row divides it by its net exposure for a like-for-like comparison. Greyed figures are not statistically significant." +
+      (mode === "impact_ex_mkt" ? " Ex-market for the S&P 500 is blank: it is the market." : "");
+}
+
 function drawRolling() {
   charts.roll && charts.roll.destroy();
-  const ch = data.chart;
+  const ch = data.chart, pick = $("rollSeries").value;
   $("rollWin").textContent = ch.rolling_window;
   const labels = shortDates().slice(1);
+  const line = (label, values, color, dash) => ({ label, data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: dash || [] });
+  const lines = pick === "_all"
+    ? data.series_defs.map(s => line(`Net book vs ${s.label}`, ch.rolling_corr[s.key], COLORS[s.key]))
+    : [line("Net book", ch.rolling_corr[pick], "#e8e4dc"),
+       ...data.benchmark_defs.map((b, i) => line(b.label, ch.rolling_corr_bench[b.key][pick], ["#5b8dd9", "#f87171"][i], [4, 3]))];
   charts.roll = new Chart($("rollChart"), {
     type: "line",
     data: { labels, datasets: [
-      ...data.series_defs.map(s => ({ label: s.label, data: ch.rolling_corr[s.key], borderColor: COLORS[s.key], borderWidth: 1.5, pointRadius: 0, tension: 0.1 })),
+      ...lines,
       { label: "zero", data: labels.map(() => 0), borderColor: "#2a3040", borderWidth: 1, pointRadius: 0, borderDash: [4, 3] },
     ] },
     options: { responsive: true, maintainAspectRatio: false, animation: false,
