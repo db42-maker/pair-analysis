@@ -181,8 +181,12 @@
 
     <div class="card">
       <div class="card-title"><span>Rolling Correlation (<span id="rollWin"></span>-Period Window)</span>
-        <select id="rollSeries" onchange="drawRolling()"></select></div>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="rollSubject" onchange="drawRolling()" aria-label="Book or name"></select>
+          <select id="rollSeries" onchange="drawRolling()" aria-label="Macro series"></select>
+        </span></div>
       <div class="chart-box"><canvas id="rollChart"></canvas></div>
+      <div class="note" id="rollNote"></div>
     </div>
 
     <div class="card">
@@ -347,8 +351,12 @@ function render() {
   drawComparison();
   drawScenario();
   const opts = defs.map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join("");
-  $("rollSeries").innerHTML = `<option value="_all">Net book vs all three</option>` +
-    defs.map(s => `<option value="${s.key}">${esc(s.label)}: book vs benchmarks</option>`).join("");
+  const prevSubject = $("rollSubject").value;
+  $("rollSubject").innerHTML = `<option value="_net">Net book</option>` +
+    d.positions.map(p => `<option value="${esc(p.ticker)}">${esc(p.ticker)}${p.weight < 0 ? " (short)" : ""}</option>`).join("");
+  if (d.positions.some(p => p.ticker === prevSubject)) $("rollSubject").value = prevSubject;
+  $("rollSeries").innerHTML = `<option value="_all">All three series</option>` +
+    defs.map(s => `<option value="${s.key}">${esc(s.label)} vs benchmarks</option>`).join("");
   drawRolling();
   $("levelSeries").innerHTML = opts;
   $("posSeries").innerHTML = opts;
@@ -425,14 +433,32 @@ function drawComparison() {
 
 function drawRolling() {
   charts.roll && charts.roll.destroy();
-  const ch = data.chart, pick = $("rollSeries").value;
+  const ch = data.chart, pick = $("rollSeries").value, who = $("rollSubject").value;
   $("rollWin").textContent = ch.rolling_window;
   const labels = shortDates().slice(1);
-  const line = (label, values, color, dash) => ({ label, data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: dash || [] });
-  const lines = pick === "_all"
-    ? data.series_defs.map(s => line(`Net book vs ${s.label}`, ch.rolling_corr[s.key], COLORS[s.key]))
-    : [line("Net book", ch.rolling_corr[pick], "#e8e4dc"),
-       ...data.benchmark_defs.map((b, i) => line(b.label, ch.rolling_corr_bench[b.key][pick], ["#5b8dd9", "#f87171"][i], [4, 3]))];
+  const line = (label, values, color, dash, width) => ({ label, data: values, borderColor: color, borderWidth: width || 1.5,
+                                                          pointRadius: 0, tension: 0.1, borderDash: dash || [] });
+  const isNet = who === "_net";
+  const subjectName = isNet ? "Net book" : who;
+  const subject = isNet ? ch.rolling_corr : ch.rolling_corr_names[who];
+  const benchLines = () => data.benchmark_defs.map((b, i) => line(b.label, ch.rolling_corr_bench[b.key][pick], ["#5b8dd9", "#f87171"][i], [4, 3]));
+
+  let lines;
+  if (pick === "_all") {
+    lines = data.series_defs.map(s => line(`${subjectName} vs ${s.label}`, subject[s.key], COLORS[s.key]));
+  } else if (isNet) {
+    lines = [line("Net book", ch.rolling_corr[pick], "#e8e4dc"), ...benchLines()];
+  } else {  // one name against one series, with the book and benchmarks for context
+    lines = [line(who, subject[pick], COLORS[pick], [], 2),
+             line("Net book", ch.rolling_corr[pick], "#e8e4dc", [], 1), ...benchLines()];
+  }
+
+  const pos = data.positions.find(p => p.ticker === who);
+  $("rollNote").textContent = (pos && pos.weight < 0)
+    ? `${who} is a short in the book, but this line is the stock's own correlation: a negative reading means the stock ` +
+      `falls when the factor rises, which helps a short.`
+    : `Each point is the correlation over the preceding ${ch.rolling_window} periods. With that many observations, swings of ` +
+      `about ±${(2 / Math.sqrt(ch.rolling_window)).toFixed(2)} can be noise; look for moves that persist.`;
   charts.roll = new Chart($("rollChart"), {
     type: "line",
     data: { labels, datasets: [

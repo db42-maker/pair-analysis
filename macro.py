@@ -302,6 +302,8 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
             "rolling_corr": {k: _rolling_corr(books["net"], X[k], window) for k, *_ in SERIES},
             "rolling_corr_bench": {b: {k: _rolling_corr(bench[b], X[k], window) for k, *_ in SERIES}
                                    for b, *_ in BENCHMARKS},
+            # Each name's own returns (not signed by long/short), so the line describes the stock itself.
+            "rolling_corr_names": {t: {k: _rolling_corr(R[t], X[k], window) for k, *_ in SERIES} for t in tickers},
         },
         "benchmark_defs": [{"key": k, "label": l, "symbol": s} for k, l, s in BENCHMARKS],
     }
