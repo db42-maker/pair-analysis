@@ -180,6 +180,12 @@
     </div>
 
     <div class="card">
+      <div class="card-title"><span>Indexed Performance — Book vs 10Y Yield, WTI and ULSD</span></div>
+      <div class="chart-box" style="height:300px"><canvas id="indexChart"></canvas></div>
+      <div class="note" id="indexNote"></div>
+    </div>
+
+    <div class="card">
       <div class="card-title"><span>Rolling Correlation (<span id="rollWin"></span>-Period Window)</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
           <select id="rollSubject" onchange="drawRolling()" aria-label="Book or name"></select>
@@ -350,6 +356,7 @@ function render() {
 
   drawComparison();
   drawScenario();
+  drawIndexed();
   const opts = defs.map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join("");
   const prevSubject = $("rollSubject").value;
   $("rollSubject").innerHTML = `<option value="_net">Net book</option>` +
@@ -429,6 +436,39 @@ function drawComparison() {
     : "Each stock and benchmark is shown as if it were 100% of NAV, so their sensitivities compare directly. The net book row is your actual book; " +
       "the scaled row divides it by its net exposure for a like-for-like comparison. Greyed figures are not statistically significant." +
       (mode === "impact_ex_mkt" ? " Ex-market for the S&P 500 is blank: it is the market." : "");
+}
+
+// Book, WTI and ULSD indexed to 100; the 10Y yield as a level on its own axis (indexing a yield misleads).
+function drawIndexed() {
+  charts.index && charts.index.destroy();
+  const ch = data.chart;
+  const idx = arr => arr.map(v => +(v / arr[0] * 100).toFixed(2));
+  const L = (label, values, color, opts = {}) => ({ label, data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.1, yAxisID: "y", ...opts });
+  const datasets = [
+    L("Net book", ch.book_index, "#e8e4dc", { borderWidth: 2.2 }),
+    L("WTI crude", idx(ch.levels.crude), COLORS.crude),
+    L("ULSD diesel", idx(ch.levels.diesel), COLORS.diesel),
+    L("10Y yield (%, right axis)", ch.levels.rates, COLORS.rates, { yAxisID: "yRate", borderDash: [4, 3] }),
+    ...data.benchmark_defs.map((b, i) => L(b.label, ch.bench_index[b.key], ["#5b8dd9", "#f87171"][i], { borderDash: [2, 2], borderWidth: 1.2, hidden: true })),
+  ];
+  charts.index = new Chart($("indexChart"), {
+    type: "line",
+    data: { labels: shortDates(), datasets },
+    options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.dataset.yAxisID === "yRate" ? c.raw.toFixed(2) + "%" : c.raw.toFixed(1)}` } } },
+      scales: {
+        x: { ticks: { ...tick, maxTicksLimit: 8 }, grid: { color: gc } },
+        y: { ticks: tick, grid: { color: gc }, title: { display: true, text: "Index (start = 100)", color: "#6b7280", font: { size: 9 } } },
+        yRate: { position: "right", grid: { display: false }, ticks: { ...tick, color: COLORS.rates, callback: v => v.toFixed(2) + "%" } },
+      } },
+  });
+  const last = a => a[a.length - 1], mv = data.series_moves;
+  $("indexNote").textContent =
+    `Over the period: book ${pct(last(ch.book_index) / 100 - 1, 1)}, WTI ${pct(mv.crude.end / mv.crude.start - 1, 1)}, ` +
+    `ULSD ${pct(mv.diesel.end / mv.diesel.start - 1, 1)}, 10Y yield ${mv.rates.start.toFixed(2)}% → ${mv.rates.end.toFixed(2)}% ` +
+    `(${((mv.rates.end - mv.rates.start) * 100 >= 0 ? "+" : "")}${((mv.rates.end - mv.rates.start) * 100).toFixed(0)}bp). ` +
+    `The book compounds today's weights (rebalanced each period, total return). WTI and ULSD are front-month futures prices as quoted. ` +
+    `Click a legend item to show or hide it; the S&P 500 and Russell 2000 start hidden.`;
 }
 
 function drawRolling() {

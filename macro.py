@@ -297,6 +297,10 @@ def analyze(holdings, fetch_prices, lookback="1y", frequency="daily", nav=None):
         "chart": {
             "dates": sample,
             "net_cum": [round(float(v), 6) for v in net_index],
+            # Base-100 indexes, compounded: the book as held, and the benchmarks.
+            "book_index": [round(float(v), 4) for v in 100 * np.concatenate([[1.0], np.cumprod(1 + books["net"])])],
+            "bench_index": {b: [round(float(v), 4) for v in 100 * np.concatenate([[1.0], np.cumprod(1 + bench[b])])]
+                            for b, *_ in BENCHMARKS},
             "levels": {k: [round(raw_levels[k][i], 3) for i in keep] for k, *_ in SERIES},
             "rolling_window": window,
             "rolling_corr": {k: _rolling_corr(books["net"], X[k], window) for k, *_ in SERIES},
